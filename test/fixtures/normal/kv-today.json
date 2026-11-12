@@ -1,0 +1,40 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "kvOperationsAdaptiveGroups": [
+            {
+              "sum": {
+                "requests": 120
+              },
+              "dimensions": {
+                "date": "2026-11-12",
+                "actionType": "read"
+              }
+            },
+            {
+              "sum": {
+                "requests": 4
+              },
+              "dimensions": {
+                "date": "2026-11-12",
+                "actionType": "write"
+              }
+            },
+            {
+              "sum": {
+                "requests": 2
+              },
+              "dimensions": {
+                "date": "2026-11-12",
+                "actionType": "list"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

@@ -9,6 +9,7 @@
  */
 
 if (!defined('CFU_CACHE')) define('CFU_CACHE', '/var/local/cloudflare.usage/usage.json'); // tests point this elsewhere
+const CFU_SETTINGS = '/Settings/CloudflareUsage';
 const CFU_STALE = 1800; // seconds without fresh data before the tile flags it
 
 function cfu_h($s) {
@@ -54,18 +55,24 @@ function cfu_body() {
   $out = '';
 
   if (!empty($d['error'])) {
-    $out .= "<div class='cfu-note cfu-warn'>".cfu_h($d['error'])."</div>";
+    $out .= "<div class='cfu-note cfu-warn'>".cfu_h($d['error'])
+      ." <a href='".CFU_SETTINGS."'>Open settings</a></div>";
   }
+
+  // Optional caps (KV, Workers AI) get a bar only once used this week.
+  $all = $d['metrics'] ?? [];
+  $shown = array_values(array_filter($all, fn($m) => $m['visible'] ?? true));
+  $idle = array_values(array_filter($all, fn($m) => !($m['visible'] ?? true)));
 
   // Today's bars, one per cap.
   $updated = 0;
-  foreach (($d['metrics'] ?? []) as $m) {
+  foreach ($all as $m) $updated = max($updated, (int)($m['fetched'] ?? 0));
+  foreach ($shown as $m) {
     $cap = max(1, (int)($m['cap'] ?? 1));
     $has = $sameDay && isset($m['value']) && is_numeric($m['value']);
     $val = $has ? (int)$m['value'] : 0;
     $pct = $val * 100 / $cap;
     $lvl = $has ? cfu_level($pct) : 'none';
-    $updated = max($updated, (int)($m['fetched'] ?? 0));
     $label = cfu_h($m['label'] ?? $m['id'] ?? '?');
     $nums = ($has ? number_format($val) : '–').' / '.number_format($cap);
     $pctTxt = $has ? '<b>'.cfu_h(cfu_pct_text($pct)).'</b>' : '';
@@ -74,10 +81,28 @@ function cfu_body() {
       ."<div class='cfu-line'><span class='cfu-label'>$label</span><span class='cfu-num'>$nums $pctTxt</span></div>"
       ."<div class='cfu-bar' role='meter' aria-label='$label' aria-valuemin='0' aria-valuemax='$cap' aria-valuenow='$val'>"
       ."<span style='width:$width%'></span></div>";
+    if (($m['id'] ?? '') === 'workers' && $has) {
+      // Pages Functions share this cap; failed requests are worth seeing early.
+      $notes = [];
+      if (!empty($m['pages'])) $notes[] = 'incl. '.number_format((int)$m['pages']).' Pages Functions';
+      if (!empty($m['errors'])) {
+        $rate = cfu_pct_text((int)$m['errors'] * 100 / max(1, (int)($m['requests_only'] ?? 0)));
+        $notes[] = number_format((int)$m['errors']).' failed ('.$rate.')';
+      }
+      if ($notes) {
+        $out .= "<div class='cfu-sub".(!empty($m['errors_high']) ? ' cfu-warn' : '')."'>".cfu_h(implode(' · ', $notes))."</div>";
+      }
+    }
     if (!empty($m['error'])) {
       $out .= "<div class='cfu-err'>Last check failed: ".cfu_h($m['error'])."</div>";
     }
     $out .= "</div>";
+  }
+  if ($idle) {
+    $names = implode(', ', array_map(fn($m) => $m['label'] ?? $m['id'], $idle));
+    $failing = array_filter($idle, fn($m) => !empty($m['error']));
+    $out .= "<div class='cfu-sub'>Also watching, unused this week: ".cfu_h($names)
+      .($failing ? " <span class='cfu-warn'>(check failing)</span>" : '')."</div>";
   }
 
   // Last 7 UTC days, each cell a small column scaled to that day's cap.
@@ -91,7 +116,7 @@ function cfu_body() {
       $name = $day === $today ? 'Today' : ($ts ? gmdate('D', $ts) : '?');
       $out .= "<span class='cfu-hist-day' title='".cfu_h($day)."'>".cfu_h($name)."</span>";
     }
-    foreach (($d['metrics'] ?? []) as $m) {
+    foreach ($shown as $m) {
       $id = $m['id'] ?? '';
       $cap = max(1, (int)($m['cap'] ?? 1));
       $out .= "<span class='cfu-hist-label'>".cfu_h($m['short'] ?? $id)."</span>";
@@ -136,6 +161,12 @@ function cfu_body() {
     $out .= "<span>Resets <span data-cfu-reset='$reset'>in ".cfu_dur($reset - $now)."</span>"
       ." at <span data-cfu-time='$reset'>".date('H:i', $reset)."</span></span>";
   }
+  $exp = (int)($d['token']['expires'] ?? 0);
+  if ($exp) {
+    $days = intdiv($exp - $now, 86400);
+    $out .= "<span".($days <= 30 ? " class='cfu-warn'" : '').">API token expires ".cfu_h(gmdate('j M Y', $exp))
+      .($days <= 30 ? " (".($days < 1 ? 'today' : "in $days days").")" : '')."</span>";
+  }
   $out .= "<span class='cfu-stale-note'>No fresh data for over 30 minutes. Check the syslog (tag cloudflare.usage).</span>";
   $out .= "</div>";
   return $out;
@@ -160,6 +191,7 @@ function cfu_tile() {
     ."</span>"
     ."<span class='tile-header-right'>"
     ."<span class='tile-header-right-controls'>"
+    ."<a href='".CFU_SETTINGS."' title='Cloudflare Usage settings'><i class='fa fa-fw fa-cog control'></i></a>"
     ."<a href='".cfu_h($link)."' target='_blank' rel='noopener noreferrer' title='Open the Cloudflare dashboard'>"
     ."<i class='fa fa-fw fa-external-link control'></i></a>"
     ."</span>"

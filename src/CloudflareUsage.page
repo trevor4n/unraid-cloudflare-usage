@@ -1,0 +1,127 @@
+Menu="Utilities"
+Title="Cloudflare Usage"
+Icon="cloud"
+Tag="cloud"
+Markdown="false"
+---
+<?PHP
+/* cloudflare.usage: settings page (Settings → User Utilities → Cloudflare Usage).
+ * The plugin's icon on the Plugins page links here (launch attribute).
+ * The token is write-only: this page never shows it, not even partly.
+ */
+require_once "$docroot/plugins/cloudflare.usage/include/settings_lib.php";
+$cfu_st = cfu_status(CFU_CFG_DIR, CFU_STATE.'/usage.json');
+$cfu_h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+$cfu_when = fn($t) => $t ? date('j M Y, H:i', $t) : '';
+$cfu_exp = (int)($cfu_st['token']['expires'] ?? 0);
+?>
+<style>
+#cfu-settings .cfu-ok { color: var(--green-800, #4f8a10); }
+#cfu-settings .cfu-bad { color: var(--orange-500, #ff8c2f); }
+#cfu-settings input[name=account_id], #cfu-settings input[name=token] { width: 34ch; font-family: monospace; }
+#cfu-settings pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+</style>
+<div id="cfu-settings">
+<p>Shows today's Cloudflare Workers Free plan usage on the Dashboard and sends Unraid notifications at 75% and 90%
+of each daily cap, before the API token expires, and when Worker errors spike.
+It needs your account ID and a read-only API token with one permission: <b>Account Analytics: Read</b>.</p>
+
+<form id="cfu-form" autocomplete="off" onsubmit="return false">
+<dl>
+<dt>Cloudflare account ID:</dt>
+<dd><input type="text" name="account_id" value="<?=$cfu_h($cfu_st['account'])?>" maxlength="32" spellcheck="false"
+  placeholder="32 characters, from your dashboard URL"></dd>
+</dl>
+<dl>
+<dt>API token:</dt>
+<dd><input type="password" name="token" autocomplete="new-password" spellcheck="false"
+  placeholder="<?=$cfu_st['token_saved'] ? 'Saved. Paste a new one to replace it.' : 'Paste the token here'?>">
+  <a href="<?=$cfu_h(CFU_TOKEN_TEMPLATE)?>" target="_blank" rel="noopener noreferrer">Create a token</a></dd>
+</dl>
+<dl>
+<dt>&nbsp;</dt>
+<dd><button type="button" id="cfu-save">Save and test</button>
+  <button type="button" id="cfu-test"<?=$cfu_st['token_saved'] && $cfu_st['account'] ? '' : ' disabled'?>>Test connection</button></dd>
+</dl>
+</form>
+<dl id="cfu-result" hidden>
+<dt>Result:</dt>
+<dd><span id="cfu-message"></span><pre id="cfu-check" hidden></pre></dd>
+</dl>
+
+<dl>
+<dt>Status:</dt>
+<dd><?php if ($cfu_st['setup_error']): ?>
+  <span class="cfu-bad"><?=$cfu_h($cfu_st['setup_error'])?></span>
+<?php elseif ($cfu_st['updated']): ?>
+  Last update <?=$cfu_h($cfu_when($cfu_st['updated']))?><?=$cfu_st['next'] ? ', next check '.$cfu_h(date('H:i', $cfu_st['next'])) : ''?>.
+  <?php foreach ($cfu_st['errors'] as $cfu_e): ?><br><span class="cfu-bad">Last check failed: <?=$cfu_h($cfu_e)?></span><?php endforeach; ?>
+<?php else: ?>
+  No data yet.
+<?php endif; ?></dd>
+</dl>
+<dl>
+<dt>Token:</dt>
+<dd><?php if (!$cfu_st['token_saved']): ?>Not saved yet.<?php else: ?>
+  Saved <?=$cfu_h($cfu_when($cfu_st['token_mtime']))?>.
+  <?php if (!empty($cfu_st['token']['status'])): ?>Cloudflare says it's <b><?=$cfu_h($cfu_st['token']['status'])?></b><?php
+    if ($cfu_exp): $cfu_days = intdiv($cfu_exp - time(), 86400); ?>, expiring <span class="<?=$cfu_days <= 30 ? 'cfu-bad' : ''?>"><?=$cfu_h(gmdate('j M Y', $cfu_exp))?> (in <?=$cfu_days?> days)</span><?php
+    else: ?>, with no expiry date<?php endif; ?>.<?php endif; ?>
+<?php endif; ?></dd>
+</dl>
+<dl>
+<dt>Alerts:</dt>
+<dd>Unraid notifications: a warning at 75% and an alert at 90% of any cap; a warning 30 days before the token expires
+  and alerts at 7 days and 1 day; a warning when Worker errors are high.
+  To get alerts on your phone, add an agent (Discord, ntfy, Pushover…) for <i>Alerts</i> in
+  <a href="/Settings/Notifications">Notification Settings</a>.</dd>
+</dl>
+<dl>
+<dt>Advanced:</dt>
+<dd>Caps and error thresholds can be changed in <code><?=$cfu_h(cfu_cfg_file(CFU_CFG_DIR))?></code>.
+  Errors are logged to the syslog under <code>cloudflare.usage</code>.</dd>
+</dl>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var form = document.getElementById('cfu-form');
+  var buttons = [document.getElementById('cfu-save'), document.getElementById('cfu-test')];
+  var result = document.getElementById('cfu-result');
+  var message = document.getElementById('cfu-message');
+  var check = document.getElementById('cfu-check');
+
+  function show(ok, text, detail) {
+    result.hidden = false;
+    message.className = ok ? 'cfu-ok' : 'cfu-bad';
+    message.textContent = text;
+    check.hidden = !detail;
+    check.textContent = detail || '';
+  }
+
+  function send(action) {
+    var body = new URLSearchParams({ csrf_token: csrf_token, action: action });
+    if (action === 'save') {
+      body.set('account_id', form.account_id.value.trim());
+      body.set('token', form.token.value.trim());
+    }
+    buttons.forEach(function (b) { b.disabled = true; });
+    show(true, action === 'save' ? 'Saving and checking with Cloudflare…' : 'Checking with Cloudflare…', '');
+    fetch('/plugins/cloudflare.usage/include/save.php', { method: 'POST', body: body, credentials: 'same-origin' })
+      .then(function (r) {
+        return r.json().catch(function () { return { ok: false, message: 'Unexpected response (HTTP ' + r.status + ').' }; });
+      })
+      .then(function (d) {
+        form.token.value = '';   // never leave the token sitting in the page
+        show(d.ok, d.message || (d.error ? 'Refused: ' + d.error : 'Done.'), d.check);
+        if (d.ok && action === 'save') setTimeout(function () { location.reload(); }, 8000);
+      })
+      .catch(function () { show(false, 'Could not reach the server.', ''); })
+      .finally(function () { buttons.forEach(function (b) { b.disabled = false; }); });
+  }
+
+  buttons[0].addEventListener('click', function () { send('save'); });
+  buttons[1].addEventListener('click', function () { send('check'); });
+})();
+</script>

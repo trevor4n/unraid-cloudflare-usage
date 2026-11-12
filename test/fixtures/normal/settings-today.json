@@ -12,7 +12,8 @@
                 "sum_requests",
                 "sum_errors",
                 "dimensions_datetimeHour",
-                "dimensions_scriptName"
+                "dimensions_scriptName",
+                "sum_errors"
               ]
             },
             "durableObjectsInvocationsAdaptiveGroups": {
@@ -43,6 +44,34 @@
                 "sum_rowsWritten",
                 "sum_duration",
                 "sum_activeTime",
+                "dimensions_date"
+              ]
+            },
+            "pagesFunctionsInvocationsAdaptiveGroups": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_requests",
+                "dimensions_date"
+              ]
+            },
+            "kvOperationsAdaptiveGroups": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_requests",
+                "dimensions_date",
+                "dimensions_actionType"
+              ]
+            },
+            "aiInferenceAdaptiveGroups": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_totalNeurons",
                 "dimensions_date"
               ]
             }

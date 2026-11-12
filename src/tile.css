@@ -44,6 +44,8 @@
 #cfu-body .cfu-red .cfu-num b { color: var(--cfu-red); }
 #cfu-body .cfu-err, #cfu-body .cfu-warn { color: var(--cfu-orange); margin-top: 0.3rem; }
 #cfu-body .cfu-note { margin-bottom: 0.9rem; }
+#cfu-body .cfu-sub { color: var(--cfu-muted); margin-top: 0.3rem; font-size: 0.9em; }
+#cfu-body .cfu-sub.cfu-warn, #cfu-body .cfu-sub .cfu-warn, #cfu-body .cfu-foot .cfu-warn { color: var(--cfu-orange); }
 
 #cfu-body .cfu-hist {
   display: grid;

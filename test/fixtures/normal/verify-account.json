@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "status": "active",
+    "expires_on": "2027-11-12T00:00:00Z"
+  }
+}

@@ -64,4 +64,8 @@ move_to unconfigured unconfigured "$TODAY" 0
 move_to normal old "$(date -u -d "$TODAY -1 day" +%F)" 90000
 jq '.metrics[1].error = "<script>alert(1)</script> HTTP 503: upstream unavailable"' "$W/out/normal.json" >"$W/out/error.json"
 
-php "$ROOT/test/tile-test.php" "$W/out" "${1:-}"
+rc=0
+php "$ROOT/test/tile-test.php" "$W/out" "${1:-}" || rc=1
+mkdir -p "$W/settings"
+php "$ROOT/test/settings-test.php" "$W/settings" || rc=1
+exit $rc

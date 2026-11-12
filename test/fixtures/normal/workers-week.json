@@ -6,7 +6,8 @@
           "workersInvocationsAdaptive": [
             {
               "sum": {
-                "requests": 3200
+                "requests": 3200,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-06T03:00:00Z"
@@ -14,7 +15,8 @@
             },
             {
               "sum": {
-                "requests": 5000
+                "requests": 5000,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-06T15:00:00Z"
@@ -22,7 +24,8 @@
             },
             {
               "sum": {
-                "requests": 15400
+                "requests": 15400,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-07T09:00:00Z"
@@ -30,7 +33,8 @@
             },
             {
               "sum": {
-                "requests": 20000
+                "requests": 20000,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-09T01:00:00Z"
@@ -38,7 +42,8 @@
             },
             {
               "sum": {
-                "requests": 21000
+                "requests": 21000,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-09T22:00:00Z"
@@ -46,7 +51,8 @@
             },
             {
               "sum": {
-                "requests": 62500
+                "requests": 62500,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-10T12:00:00Z"
@@ -54,7 +60,8 @@
             },
             {
               "sum": {
-                "requests": 23750
+                "requests": 23750,
+                "errors": 3
               },
               "dimensions": {
                 "datetimeHour": "2026-11-11T00:00:00Z"
@@ -62,7 +69,8 @@
             },
             {
               "sum": {
-                "requests": 2345
+                "requests": 2345,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-12T05:00:00Z"
@@ -70,7 +78,8 @@
             },
             {
               "sum": {
-                "requests": 6000
+                "requests": 6000,
+                "errors": 12
               },
               "dimensions": {
                 "datetimeHour": "2026-11-12T13:00:00Z"
@@ -78,7 +87,8 @@
             },
             {
               "sum": {
-                "requests": 4000
+                "requests": 4000,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-12T17:00:00Z"

@@ -26,8 +26,13 @@ setsid bash -c '
   /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll
 ' </dev/null >/dev/null 2>&1 &
 
+# What the install dialog shows (live on Unraid 7.4+). @VERSION@ is filled in by build.sh.
 echo ""
-echo "cloudflare.usage installed. Settings: $CFG/cloudflare.usage.cfg"
-grep -q '^ACCOUNT_ID="[0-9a-f]\{32\}"' "$CFG/cloudflare.usage.cfg" ||
-  echo "Next: set ACCOUNT_ID in that file and save the API token to $CFG/cf-api-token (see the README)."
+echo "Cloudflare Usage @VERSION@"
+acct=$(sed -n 's/^ACCOUNT_ID="\([0-9a-f]\{32\}\)".*/\1/p' "$CFG/cloudflare.usage.cfg" 2>/dev/null)
+if [[ -n $acct && -s $CFG/cf-api-token ]]; then
+  echo "Set up for account $acct. Checks run every 5 to 15 minutes; the tile is on the Dashboard."
+else
+  echo "Next: open Settings > Cloudflare Usage (or click this plugin's icon) to add your account ID and API token."
+fi
 echo ""

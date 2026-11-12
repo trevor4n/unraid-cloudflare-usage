@@ -4,7 +4,8 @@
 # Fetches today's (UTC) Cloudflare Workers Free plan usage from the GraphQL
 # Analytics API, writes the JSON cache the Dashboard tile reads, and raises an
 # Unraid notification at 75% and 90% of each daily cap, once per threshold per
-# UTC day.
+# UTC day. It also warns before the API token expires, and when a Worker's
+# error rate is high.
 #
 # Cron wakes it every 5 minutes with --cron; it only queries Cloudflare when a
 # check is due. The gap between checks follows the busiest cap: 15 minutes
@@ -15,7 +16,7 @@
 # The API token is read from a file and handed to curl on stdin (curl -K -),
 # so it never appears in the process list, the cache, or the logs.
 #
-#   poll           check now (used at install, and by hand)
+#   poll           check now (used at install, by the settings page, and by hand)
 #   poll --cron    check only if due (cron)
 #   poll --check   print what the token can see and today's totals; writes nothing
 
@@ -31,18 +32,22 @@ NOTIFY=${CF_USAGE_NOTIFY:-/usr/local/emhttp/webGui/scripts/notify}
 CURL=${CF_USAGE_CURL:-curl}
 LOGGER=${CF_USAGE_LOGGER:-logger}
 API=${CF_USAGE_API:-https://api.cloudflare.com/client/v4/graphql}
+API_BASE=${CF_USAGE_API_BASE:-https://api.cloudflare.com/client/v4}
 NOW=${CF_USAGE_NOW:-$(date -u +%s)}
 
 CFG=$CFG_DIR/$PLUGIN.cfg
 CACHE=$STATE_DIR/usage.json            # read by the tile; never contains the token
 HIST_RAM=$STATE_DIR/history.json       # per-day totals, last 7 UTC days
 HIST_FLASH=$CFG_DIR/history.json       # completed days only, survives reboots
-ALERTS=$CFG_DIR/alerts.sent            # "day metric threshold"; written only when an alert fires
+TOKEN_STATE=$STATE_DIR/token.json      # token status and expiry, checked once a day
+ALERTS=$CFG_DIR/alerts.sent            # alerts already sent; written only when one fires
 FAIL_SINCE=$STATE_DIR/failing-since    # first run in the current streak where every query failed
 LAST_ERR=$STATE_DIR/last-error         # last error logged, to keep the syslog quiet
+SETTINGS_LINK=/Settings/CloudflareUsage
 
 FAIL_ALERT_AFTER=3000                  # seconds of total failure before one notification a day
 CRON_SLACK=120                         # a cron wake-up this close to the due time counts as due
+TOKEN_RECHECK=86400                    # look up the token's expiry once a day
 
 CHECK=0 CRON=0
 case ${1:-} in
@@ -109,64 +114,86 @@ CAP_DO_READ=$(num_or "$(cfg CAP_DO_READ 5000000)" 5000000)
 CAP_DO_GBS=$(num_or "$(cfg CAP_DO_GBS 13000)" 13000)
 CAP_D1_WRITE=$(num_or "$(cfg CAP_D1_WRITE 100000)" 100000)
 CAP_D1_READ=$(num_or "$(cfg CAP_D1_READ 5000000)" 5000000)
+CAP_KV_READ=$(num_or "$(cfg CAP_KV_READ 100000)" 100000)
+CAP_KV_WRITE=$(num_or "$(cfg CAP_KV_WRITE 1000)" 1000)
+CAP_KV_DELETE=$(num_or "$(cfg CAP_KV_DELETE 1000)" 1000)
+CAP_KV_LIST=$(num_or "$(cfg CAP_KV_LIST 1000)" 1000)
+CAP_AI=$(num_or "$(cfg CAP_AI_NEURONS 10000)" 10000)
+ERR_ALERT_MIN=$(num_or "$(cfg ERROR_ALERT_MIN 50)" 50)        # at least this many failed requests today
+ERR_ALERT_PCT=$(num_or "$(cfg ERROR_ALERT_PERCENT 5)" 5)      # and at least this share of requests
 
-# One entry per free-plan daily cap. "src" is the query that reports it.
-# Durable Objects on Workers Free are SQLite-backed, so their storage has its
-# own rows read/written caps (separate from D1's), plus a compute-duration cap.
+# One entry per free-plan daily cap.
+#   srcs: the queries that report it.  keys: history fields summed into its value.
+#   opt:  shown on the tile only once used in the last 7 days (alerts work regardless).
+# Pages Functions requests count toward the same 100k cap as Workers, so they
+# are added to the Workers bar. Durable Objects on Workers Free are
+# SQLite-backed, so their storage has its own rows caps (separate from D1's).
 DEFS=$(jq -nc --argjson w "$CAP_WORKERS" --argjson o "$CAP_DO" --argjson ow "$CAP_DO_WRITE" --argjson or "$CAP_DO_READ" \
-  --argjson og "$CAP_DO_GBS" --argjson dw "$CAP_D1_WRITE" --argjson dr "$CAP_D1_READ" '[
-  {id: "workers",  src: "workers",  label: "Workers requests",           short: "Workers",   cap: $w},
-  {id: "do",       src: "do",       label: "Durable Objects requests",   short: "DO",        cap: $o},
-  {id: "do_write", src: "do_store", label: "DO storage rows written",    short: "DO writes", cap: $ow},
-  {id: "do_read",  src: "do_store", label: "DO storage rows read",       short: "DO reads",  cap: $or},
-  {id: "do_gbs",   src: "do_store", label: "DO duration (GB-s)",         short: "DO GB-s",   cap: $og},
-  {id: "d1_write", src: "d1",       label: "D1 rows written",            short: "D1 writes", cap: $dw},
-  {id: "d1_read",  src: "d1",       label: "D1 rows read",               short: "D1 reads",  cap: $dr}]')
-SOURCES="workers do do_store d1"
+  --argjson og "$CAP_DO_GBS" --argjson dw "$CAP_D1_WRITE" --argjson dr "$CAP_D1_READ" \
+  --argjson kr "$CAP_KV_READ" --argjson kw "$CAP_KV_WRITE" --argjson kd "$CAP_KV_DELETE" --argjson kl "$CAP_KV_LIST" \
+  --argjson ai "$CAP_AI" '[
+  {id: "workers",   srcs: ["workers", "pages"], keys: ["workers", "pages"], label: "Workers requests", short: "Workers", cap: $w},
+  {id: "do",        srcs: ["do"],       label: "Durable Objects requests", short: "DO",        cap: $o},
+  {id: "do_write",  srcs: ["do_store"], label: "DO storage rows written",  short: "DO writes", cap: $ow},
+  {id: "do_read",   srcs: ["do_store"], label: "DO storage rows read",     short: "DO reads",  cap: $or},
+  {id: "do_gbs",    srcs: ["do_store"], label: "DO duration (GB-s)",       short: "DO GB-s",   cap: $og},
+  {id: "d1_write",  srcs: ["d1"],       label: "D1 rows written",          short: "D1 writes", cap: $dw},
+  {id: "d1_read",   srcs: ["d1"],       label: "D1 rows read",             short: "D1 reads",  cap: $dr},
+  {id: "kv_read",   srcs: ["kv"], opt: true, label: "KV reads",            short: "KV reads",  cap: $kr},
+  {id: "kv_write",  srcs: ["kv"], opt: true, label: "KV writes",           short: "KV writes", cap: $kw},
+  {id: "kv_delete", srcs: ["kv"], opt: true, label: "KV deletes",          short: "KV deletes", cap: $kd},
+  {id: "kv_list",   srcs: ["kv"], opt: true, label: "KV lists",            short: "KV lists",  cap: $kl},
+  {id: "ai",        srcs: ["ai"], opt: true, label: "Workers AI neurons",  short: "AI",        cap: $ai}
+  ] | map(.keys //= [.id])')
+SOURCES="workers pages do do_store kv ai d1"
 
 TOKEN=""
 CFG_ERR=""
+SETUP_HINT="Open Settings → Cloudflare Usage to set it up."
 if [[ ! $ACCOUNT_ID =~ ^[0-9a-f]{32}$ ]]; then
-  CFG_ERR="Not set up: put your Cloudflare account ID in $CFG (ACCOUNT_ID=\"...\")."
+  CFG_ERR="Not set up: no Cloudflare account ID yet. $SETUP_HINT"
 elif [[ ! -r $TOKEN_FILE ]]; then
-  CFG_ERR="Not set up: save a read-only API token (Account Analytics: Read) to $TOKEN_FILE."
+  CFG_ERR="Not set up: no API token saved yet (Account Analytics: Read). $SETUP_HINT"
 else
   TOKEN=$(tr -d '[:space:]' <"$TOKEN_FILE")
   # The token goes inside a quoted curl config line, so allow only token-safe characters.
   if [[ -z $TOKEN ]]; then
-    CFG_ERR="The token file $TOKEN_FILE is empty. Save the token again (README step 5)."
+    CFG_ERR="The saved API token is empty. Save it again in Settings → Cloudflare Usage."
   elif [[ ! $TOKEN =~ ^[A-Za-z0-9._~+/=-]{20,256}$ ]]; then
     TOKEN=""
-    CFG_ERR="The token file $TOKEN_FILE does not hold a valid API token (wrong length or characters). Save it again (README step 5)."
+    CFG_ERR="The saved API token isn't valid (wrong length or characters). Save it again in Settings → Cloudflare Usage."
   fi
 fi
 
-# --- GraphQL ----------------------------------------------------------------
-# gql QUERY: sets BODY. Returns 0 on success, 1 on a GraphQL error (HTTP 200),
-# 2 on a transport or HTTP error. On failure ERR holds a one-line message.
-BODY="" ERR=""
-gql() {
-  local payload out code errf=$STATE_DIR/curl.err
-  payload=$(jq -nc --arg q "$1" '{query: $q}')
-  # printf is a bash builtin: the token reaches curl through a pipe, not argv.
-  out=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
-    "$CURL" -sS -K - --max-time 30 --retry 2 --retry-delay 5 \
-      -H 'Content-Type: application/json' -H 'Accept: application/json' \
-      --data-binary "$payload" -w '\n%{http_code}' "$API" 2>"$errf")
-  code=${out##*$'\n'}
+# --- Cloudflare API ---------------------------------------------------------
+# request URL [JSON]: GET, or POST when a JSON body is given. Sets BODY and
+# CODE. The auth header reaches curl through a pipe from the printf builtin,
+# never through argv.
+BODY="" CODE="" ERR=""
+request() {
+  local out errf=$STATE_DIR/curl.err
+  local args=(-sS -K - --max-time 30 --retry 2 --retry-delay 5 -H 'Accept: application/json' -w '\n%{http_code}')
+  [[ -n ${2:-} ]] && args+=(-H 'Content-Type: application/json' --data-binary "$2")
+  out=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | "$CURL" "${args[@]}" "$1" 2>"$errf")
+  CODE=${out##*$'\n'}
   BODY=${out%$'\n'*}
-  [[ $code =~ ^[0-9]{3}$ ]] || code=000
-  ERR=""
-  if [[ $code != 200 ]]; then
-    if [[ $code == 000 ]]; then
-      ERR="Could not reach Cloudflare: $(head -n 1 "$errf" 2>/dev/null | cut -c1-200)"
-    else
-      ERR=$(jq -r '(.errors // [])[0].message // empty' <<<"$BODY" 2>/dev/null | head -n 1)
-      ERR="HTTP $code: ${ERR:-$(head -n 1 <<<"$BODY" | cut -c1-200)}"
-    fi
-    ERR=${ERR//"$TOKEN"/[redacted]}
-    return 2
+  [[ $CODE =~ ^[0-9]{3}$ ]] || CODE=000
+  if [[ $CODE == 000 ]]; then
+    ERR="Could not reach Cloudflare: $(head -n 1 "$errf" 2>/dev/null | cut -c1-200)"
+  elif [[ $CODE != 200 ]]; then
+    ERR=$(jq -r '(.errors // [])[0].message // empty' <<<"$BODY" 2>/dev/null | head -n 1)
+    ERR="HTTP $CODE: ${ERR:-$(head -n 1 <<<"$BODY" | cut -c1-200)}"
+  else
+    ERR=""
   fi
+  ERR=${ERR//"$TOKEN"/[redacted]}
+}
+
+# gql QUERY: returns 0 on success, 1 on a GraphQL error (HTTP 200), 2 on a
+# transport or HTTP error. On failure ERR holds a one-line message.
+gql() {
+  request "$API" "$(jq -nc --arg q "$1" '{query: $q}')"
+  [[ $CODE == 200 ]] || return 2
   ERR=$(jq -r '
     if ((.errors // []) | length) > 0 then (.errors[0].message // "unknown API error")
     elif ((.data.viewer.accounts // []) | length) == 0 then "Account not found, or the token cannot read its analytics"
@@ -179,45 +206,43 @@ gql() {
 
 # Queries use literals rather than variables: every value is validated above
 # (hex account ID, dates and times built by date(1)), so nothing is injected.
-q_workers() { # $1 start date
-  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { workersInvocationsAdaptive(limit: 2000, filter: {datetime_geq: "%sT00:00:00Z", datetime_leq: "%s"}) { sum { requests } dimensions { datetimeHour } } } } }' \
-    "$ACCOUNT_ID" "$1" "$NOW_ISO"
+acct_q() { printf '{ viewer { accounts(filter: {accountTag: "%s"}) { %s } } }' "$ACCOUNT_ID" "$1"; }
+by_date() { # node fields start
+  acct_q "$(printf '%s(limit: %s, filter: {date_geq: "%s", date_leq: "%s"}) { sum { %s } dimensions { %s } }' "$1" "$4" "$3" "$TODAY" "$2" "${5:-date}")"
 }
-q_do() {
-  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { durableObjectsInvocationsAdaptiveGroups(limit: 100, filter: {date_geq: "%s", date_leq: "%s"}) { sum { requests } dimensions { date } } } } }' \
-    "$ACCOUNT_ID" "$1" "$TODAY"
-}
-q_do_store() {
-  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { durableObjectsPeriodicGroups(limit: 100, filter: {date_geq: "%s", date_leq: "%s"}) { sum { rowsRead rowsWritten duration } dimensions { date } } } } }' \
-    "$ACCOUNT_ID" "$1" "$TODAY"
-}
-q_d1() {
-  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {date_geq: "%s", date_leq: "%s"}) { sum { rowsRead rowsWritten } dimensions { date } } } } }' \
-    "$ACCOUNT_ID" "$1" "$TODAY"
-}
+q_workers()  { acct_q "$(printf 'workersInvocationsAdaptive(limit: 2000, filter: {datetime_geq: "%sT00:00:00Z", datetime_leq: "%s"}) { sum { requests errors } dimensions { datetimeHour } }' "$1" "$NOW_ISO")"; }
+q_pages()    { by_date pagesFunctionsInvocationsAdaptiveGroups "requests" "$1" 100; }
+q_do()       { by_date durableObjectsInvocationsAdaptiveGroups "requests" "$1" 100; }
+q_do_store() { by_date durableObjectsPeriodicGroups "rowsRead rowsWritten duration" "$1" 100; }
+q_kv()       { by_date kvOperationsAdaptiveGroups "requests" "$1" 1000 "date actionType"; }
+q_ai()       { by_date aiInferenceAdaptiveGroups "totalNeurons" "$1" 100; }
+q_d1()       { by_date d1AnalyticsAdaptiveGroups "rowsRead rowsWritten" "$1" 100; }
 
-# Turn a response into {"YYYY-MM-DD": {"metric": n, ...}}, filling every date
+# Turn a response into {"YYYY-MM-DD": {"field": n, ...}}, filling every date
 # in the queried range with 0 where Cloudflare returned no rows.
 J_PRELUDE='def days($from): $dates | map(select(. >= $from));
-def fill($from; $keys): . as $m | reduce days($from)[] as $d ($m; .[$d] = ((reduce $keys[] as $k ({}; .[$k] = 0)) + (.[$d] // {})));'
+def fill($from; $keys): . as $m | reduce days($from)[] as $d ($m; .[$d] = ((reduce $keys[] as $k ({}; .[$k] = 0)) + (.[$d] // {})));
+def rows($node): .data.viewer.accounts[0][$node] // [];
+def per_date($node; f): rows($node) | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: f}) | from_entries;'
 parse() { # parse SRC FROM
   local f
   case $1 in
-    workers) f='.data.viewer.accounts[0].workersInvocationsAdaptive // []
-      | map({d: (.dimensions.datetimeHour // "")[0:10], v: (.sum.requests // 0)}) | map(select(.d != ""))
-      | group_by(.d) | map({key: .[0].d, value: {workers: (map(.v) | add)}}) | from_entries
-      | fill($from; ["workers"])' ;;
-    do) f='.data.viewer.accounts[0].durableObjectsInvocationsAdaptiveGroups // []
-      | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: {do: (map(.sum.requests // 0) | add)}}) | from_entries
-      | fill($from; ["do"])' ;;
-    do_store) f='.data.viewer.accounts[0].durableObjectsPeriodicGroups // []
-      | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: {
+    workers) f='rows("workersInvocationsAdaptive")
+      | map({d: (.dimensions.datetimeHour // "")[0:10], v: (.sum.requests // 0), e: (.sum.errors // 0)}) | map(select(.d != ""))
+      | group_by(.d) | map({key: .[0].d, value: {workers: (map(.v) | add), workers_err: (map(.e) | add)}}) | from_entries
+      | fill($from; ["workers", "workers_err"])' ;;
+    pages) f='per_date("pagesFunctionsInvocationsAdaptiveGroups"; {pages: (map(.sum.requests // 0) | add)}) | fill($from; ["pages"])' ;;
+    do) f='per_date("durableObjectsInvocationsAdaptiveGroups"; {do: (map(.sum.requests // 0) | add)}) | fill($from; ["do"])' ;;
+    do_store) f='per_date("durableObjectsPeriodicGroups"; {
           do_read: (map(.sum.rowsRead // 0) | add), do_write: (map(.sum.rowsWritten // 0) | add),
-          do_gbs: (map(.sum.duration // 0) | add | . * 10 | round / 10)}}) | from_entries
+          do_gbs: (map(.sum.duration // 0) | add | . * 10 | round / 10)})
       | fill($from; ["do_read", "do_write", "do_gbs"])' ;;
-    d1) f='.data.viewer.accounts[0].d1AnalyticsAdaptiveGroups // []
-      | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: {
-          d1_read: (map(.sum.rowsRead // 0) | add), d1_write: (map(.sum.rowsWritten // 0) | add)}}) | from_entries
+    kv) f='per_date("kvOperationsAdaptiveGroups"; reduce .[] as $r ({};
+          .["kv_" + ($r.dimensions.actionType // "other")] += ($r.sum.requests // 0)) | with_entries(select(.key | IN("kv_read", "kv_write", "kv_delete", "kv_list"))))
+      | fill($from; ["kv_read", "kv_write", "kv_delete", "kv_list"])' ;;
+    ai) f='per_date("aiInferenceAdaptiveGroups"; {ai: (map(.sum.totalNeurons // 0) | add | floor)}) | fill($from; ["ai"])' ;;
+    d1) f='per_date("d1AnalyticsAdaptiveGroups"; {
+          d1_read: (map(.sum.rowsRead // 0) | add), d1_write: (map(.sum.rowsWritten // 0) | add)})
       | fill($from; ["d1_read", "d1_write"])' ;;
   esac
   jq -c --argjson dates "$DATES" --arg from "$2" "$J_PRELUDE $f" <<<"$BODY"
@@ -243,24 +268,52 @@ fetch() {
   return 1
 }
 
+# token_info: the token's status and expiry from Cloudflare's verify endpoint
+# (account-owned tokens first, then user tokens). Prints JSON, or fails.
+token_info() {
+  local path
+  for path in "/accounts/$ACCOUNT_ID/tokens/verify" "/user/tokens/verify"; do
+    request "$API_BASE$path"
+    [[ $CODE == 200 ]] || continue
+    jq -ce --argjson now "$NOW" '
+      select(.success == true) | .result
+      | {checked: $now, status: (.status // "unknown"),
+         expires: (.expires_on // null | if . == null then null else (sub("\\.[0-9]+"; "") | fromdateiso8601) end)}' <<<"$BODY" 2>/dev/null &&
+      return 0
+  done
+  return 1
+}
+
 # --- --check: report and exit -----------------------------------------------
 if (( CHECK )); then
   [[ -z $CFG_ERR ]] || { echo "$CFG_ERR"; exit 1; }
   echo "Account $ACCOUNT_ID, token file $TOKEN_FILE (token not shown)"
-  q='{ viewer { accounts(filter: {accountTag: "'$ACCOUNT_ID'"}) { settings {
+  if t=$(token_info); then
+    jq -r --argjson now "$NOW" '"Token: \(.status), " + (if .expires == null then "no expiry date"
+      else "expires \(.expires | strftime("%Y-%m-%d")) (in \(((.expires - $now) / 86400) | floor) days)" end)' <<<"$t"
+  else
+    echo "Token: could not read its status or expiry ($ERR)"
+  fi
+  q=$(acct_q 'settings {
       workersInvocationsAdaptive { enabled maxDuration notOlderThan availableFields }
+      pagesFunctionsInvocationsAdaptiveGroups { enabled maxDuration notOlderThan availableFields }
       durableObjectsInvocationsAdaptiveGroups { enabled maxDuration notOlderThan availableFields }
       durableObjectsPeriodicGroups { enabled maxDuration notOlderThan availableFields }
-      d1AnalyticsAdaptiveGroups { enabled maxDuration notOlderThan availableFields } } } } }'
+      kvOperationsAdaptiveGroups { enabled maxDuration notOlderThan availableFields }
+      aiInferenceAdaptiveGroups { enabled maxDuration notOlderThan availableFields }
+      d1AnalyticsAdaptiveGroups { enabled maxDuration notOlderThan availableFields } }')
   if gql "$q"; then
     jq -r '
-      {workersInvocationsAdaptive: ["sum_requests", "dimensions_datetimeHour"],
+      {workersInvocationsAdaptive: ["sum_requests", "sum_errors", "dimensions_datetimeHour"],
+       pagesFunctionsInvocationsAdaptiveGroups: ["sum_requests", "dimensions_date"],
        durableObjectsInvocationsAdaptiveGroups: ["sum_requests", "dimensions_date"],
        durableObjectsPeriodicGroups: ["sum_rowsRead", "sum_rowsWritten", "sum_duration", "dimensions_date"],
+       kvOperationsAdaptiveGroups: ["sum_requests", "dimensions_date", "dimensions_actionType"],
+       aiInferenceAdaptiveGroups: ["sum_totalNeurons", "dimensions_date"],
        d1AnalyticsAdaptiveGroups: ["sum_rowsRead", "sum_rowsWritten", "dimensions_date"]} as $need
       | .data.viewer.accounts[0].settings | to_entries[]
       | .key as $k | .value as $s
-      | ($need[$k] - ($s.availableFields // [])) as $missing
+      | (($need[$k] // []) - ($s.availableFields // [])) as $missing
       | "\($k): enabled=\($s.enabled), max range \(($s.maxDuration // 0) / 86400 * 10 | floor / 10) days, history \(($s.notOlderThan // 0) / 86400 | floor) days"
         + (if ($missing | length) > 0 then ", MISSING fields: \($missing | join(" "))" else ", needed fields present" end)' <<<"$BODY"
   else
@@ -296,6 +349,21 @@ if [[ -z $CFG_ERR ]]; then
   done
 fi
 
+# Token status and expiry: once a day, or right away when the token file changes.
+TOKJSON=$(cat "$TOKEN_STATE" 2>/dev/null || echo '{}')
+jq -e 'type == "object"' <<<"$TOKJSON" >/dev/null 2>&1 || TOKJSON='{}'
+if [[ -z $CFG_ERR ]]; then
+  checked=$(jq -r '.checked // 0' <<<"$TOKJSON")
+  if (( NOW - checked >= TOKEN_RECHECK )) || [[ $(stat -c %Y "$TOKEN_FILE" 2>/dev/null || echo 0) -gt $checked ]]; then
+    if t=$(token_info); then
+      TOKJSON=$t
+      printf '%s\n' "$TOKJSON" | put "$TOKEN_STATE"
+    fi
+  fi
+else
+  TOKJSON='{}'
+fi
+
 # Keep the last 7 UTC days.
 HIST=$(jq -c --arg since "$SINCE" 'with_entries(select(.key >= $since))' <<<"$HIST")
 printf '%s\n' "$HIST" | put "$HIST_RAM"
@@ -315,8 +383,11 @@ fi
 # should query Cloudflare (see the header for the rules).
 jq -n --argjson hist "$HIST" --argjson prev "$PREV" --argjson errs "$ERRS" --argjson defs "$DEFS" \
   --argjson dates "$DATES" --arg today "$TODAY" --argjson now "$NOW" --argjson reset "$RESET" \
-  --arg cfgerr "$CFG_ERR" --arg acct "$ACCOUNT_ID" '
+  --arg cfgerr "$CFG_ERR" --arg acct "$ACCOUNT_ID" --argjson token "$TOKJSON" \
+  --argjson errmin "$ERR_ALERT_MIN" --argjson errpct "$ERR_ALERT_PCT" '
   def prevm($id): if ($prev.day // "") == $today then (($prev.metrics // []) | map(select(.id == $id)) | .[0] // {}) else {} end;
+  # A metric value is the sum of its history fields; null when none were ever fetched.
+  def val($day; $m): [$m.keys[] as $k | $hist[$day][$k] | select(. != null)] | if length == 0 then null else add end;
   # Base gap from the busiest cap.
   def tier($pct): if $pct >= 85 then 300 elif $pct >= 75 then 600 else 900 end;
   # Seconds until metric $m reaches its next threshold at the growth rate seen
@@ -329,19 +400,30 @@ jq -n --argjson hist "$HIST" --argjson prev "$PREV" --argjson errs "$ERRS" --arg
         | if $t == null then null else ($t - $m.value) / $rate end
       end;
   {
-    schema: 1,
+    schema: 2,
     generated: $now,
     day: $today,
     reset: $reset,
     account: $acct,
     error: $cfgerr,
-    metrics: [ $defs[] as $m | {
-      id: $m.id, label: $m.label, short: $m.short, cap: $m.cap,
-      value: ($hist[$today][$m.id] // null),
-      error: (if $cfgerr != "" then "" else ($errs[$m.src] // "") end),
-      fetched: (if $cfgerr == "" and ($errs[$m.src] // "") == "" then $now else (prevm($m.id).fetched // null) end)
-    } ],
-    history: [ $dates[] as $d | {day: $d} + ($hist[$d] // {}) ]
+    token: $token,
+    metrics: [ $defs[] as $m
+      | ([$m.srcs[] as $s | $errs[$s] // empty | "\($s): \(.)"] | join("; ")) as $err
+      | {
+        id: $m.id, label: $m.label, short: $m.short, cap: $m.cap, optional: ($m.opt // false),
+        value: val($today; $m),
+        error: (if $cfgerr != "" then "" else $err end),
+        fetched: (if $cfgerr == "" and $err == "" then $now else (prevm($m.id).fetched // null) end),
+        # Optional caps (KV, Workers AI) appear once used in the last 7 days.
+        visible: (if ($m.opt // false) then ([$dates[] as $d | val($d; $m) // 0] | add) > 0 else true end)
+      }
+      | if .id == "workers" then
+          . + {pages: ($hist[$today].pages // 0), errors: ($hist[$today].workers_err // null),
+               requests_only: ($hist[$today].workers // null)}
+          | .errors_high = ((.errors // 0) >= $errmin and (.requests_only // 0) > 0
+                            and ((.errors // 0) * 100) >= ($errpct * .requests_only))
+        else . end ],
+    history: [ $dates[] as $d | {day: $d} + (reduce $defs[] as $m ({}; .[$m.id] = val($d; $m))) ]
   }
   | .interval = (
       if $cfgerr != "" then 300   # nothing to query; pick up new settings quickly
@@ -362,11 +444,15 @@ if [[ $summary != "$(cat "$LAST_ERR" 2>/dev/null)" ]]; then
 fi
 
 # --- alerts -----------------------------------------------------------------------
+# Cap, error and failure alerts are recorded as "<day> <what> <level>" and
+# forgotten the next UTC day. Token alerts are recorded as
+# "token <expiry> <days>" and kept until the token changes.
 sent_today() { grep -qx "$TODAY $1 $2" "$ALERTS" 2>/dev/null; }
+sent_ever()  { grep -qx "$1" "$ALERTS" 2>/dev/null; }
 NEW_SENT=()
 
-notify() { # importance subject description message
-  "$NOTIFY" -e "Cloudflare usage" -s "$2" -d "$3" -m "$4" -i "$1" -l "/Dashboard" >/dev/null 2>&1 ||
+notify() { # importance subject description message [link]
+  "$NOTIFY" -e "Cloudflare usage" -s "$2" -d "$3" -m "$4" -i "$1" -l "${5:-/Dashboard}" >/dev/null 2>&1 ||
     log "notify failed: $2"
 }
 
@@ -381,10 +467,12 @@ while IFS=$'\t' read -r id label value cap; do
   sent_today "$id" "$level" && continue
   pct=$(( value * 100 / cap ))
   case $id in
-    workers) after="Past the cap, Workers on this account return Error 1027 (or skip the Worker if its route fails open) until the reset." ;;
+    workers) after="Past the cap, Workers and Pages Functions on this account return Error 1027 (or skip the Worker if its route fails open) until the reset." ;;
     do)      after="Past the cap, Durable Object requests fail until the reset." ;;
     do_write|do_read) after="Past the cap, Durable Object storage operations of that kind fail until the reset." ;;
     do_gbs)  after="Past the cap, Durable Objects stop running until the reset." ;;
+    kv_*)    after="Past the cap, KV operations of that kind fail until the reset." ;;
+    ai)      after="Past the cap, Workers AI requests fail until the reset (more needs the Workers Paid plan)." ;;
     *)       after="Past the cap, D1 queries that need more rows fail until the reset." ;;
   esac
   imp=warning; (( level == 90 )) && imp=alert
@@ -395,6 +483,33 @@ while IFS=$'\t' read -r id label value cap; do
   (( level == 90 )) && NEW_SENT+=("$TODAY $id 90")
 done < <(jq -r '.metrics[] | select(.value != null) | [.id, .label, (.value | floor), .cap] | @tsv' "$CACHE")
 
+# Worker errors: once a day when failures are both numerous and a real share.
+read -r errs reqs high < <(jq -r '.metrics[] | select(.id == "workers") | "\(.errors // 0) \(.requests_only // 0) \(.errors_high)"' "$CACHE")
+if [[ ${high:-false} == true ]] && ! sent_today worker-errors 1; then
+  notify warning "Cloudflare Worker errors: $(commas "$errs") failed requests today" \
+    "$(commas "$errs") of $(commas "$reqs") Worker requests failed today (UTC), $(( errs * 100 / reqs ))%." \
+    "Open Workers & Pages, your Worker, Observability to see why. Common causes: an uncaught exception, or going over the Free plan's 10 ms CPU limit per request." \
+    "https://dash.cloudflare.com/$ACCOUNT_ID/workers-and-pages"
+  NEW_SENT+=("$TODAY worker-errors 1")
+fi
+
+# Token expiry: a warning 30 days out, then alerts at 7 days and 1 day.
+read -r texp tstatus < <(jq -r '"\(.token.expires // "none") \(.token.status // "unknown")"' "$CACHE")
+if [[ $texp =~ ^[0-9]+$ ]]; then
+  days=$(( (texp - NOW) / 86400 ))
+  edate=$(date -u -d "@$texp" +%F)
+  level=0
+  if (( days <= 1 )); then level=1; elif (( days <= 7 )); then level=7; elif (( days <= 30 )); then level=30; fi
+  if (( level )) && (( texp > NOW )) && ! sent_ever "token $texp $level"; then
+    imp=alert; (( level == 30 )) && imp=warning
+    when="in $days days"; (( days < 1 )) && when="within a day"; (( days == 1 )) && when="tomorrow"
+    notify "$imp" "Cloudflare API token expires $when" \
+      "The read-only token Cloudflare Usage uses expires on $edate (UTC). After that, usage checks and cap alerts stop." \
+      "Create a new token (Account Analytics: Read) and save it in Settings → Cloudflare Usage." "$SETTINGS_LINK"
+    for l in 30 7 1; do (( l >= level )) && NEW_SENT+=("token $texp $l"); done
+  fi
+fi
+
 # Tell the user once a day if every query has been failing for a while, since
 # a broken poller would otherwise mean no alerts at all.
 if [[ -z $CFG_ERR ]] && (( ok_count == 0 )); then
@@ -403,7 +518,7 @@ if [[ -z $CFG_ERR ]] && (( ok_count == 0 )); then
   if (( NOW - since >= FAIL_ALERT_AFTER )) && ! sent_today poll-failing 1; then
     notify warning "Cloudflare usage check is failing" \
       "No usage data since $(date -d "@$since" '+%H:%M'). Cap alerts are paused until it works again." \
-      "$(jq -r 'to_entries | map("\(.key): \(.value)") | join("; ")' <<<"$ERRS")"
+      "$(jq -r 'to_entries | map("\(.key): \(.value)") | join("; ")' <<<"$ERRS")" "$SETTINGS_LINK"
     NEW_SENT+=("$TODAY poll-failing 1")
   fi
 else
@@ -411,7 +526,8 @@ else
 fi
 
 if (( ${#NEW_SENT[@]} )); then
-  { grep "^$TODAY " "$ALERTS" 2>/dev/null; printf '%s\n' "${NEW_SENT[@]}"; } | sort -u | put "$ALERTS" ||
+  # Keep today's records and the current token's; drop the rest.
+  { grep -E "^($TODAY|token ${texp:-none}) " "$ALERTS" 2>/dev/null; printf '%s\n' "${NEW_SENT[@]}"; } | sort -u | put "$ALERTS" ||
     log "could not write $ALERTS"
 fi
 exit 0

@@ -1,4 +1,5 @@
 # cloudflare.usage settings. Read by /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll.
+# Settings → Cloudflare Usage edits ACCOUNT_ID and the token for you.
 # Changes apply within 15 minutes (5 while not set up); no restart needed. To apply now:
 #   /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll
 
@@ -17,3 +18,13 @@ CAP_DO_READ="5000000"
 CAP_DO_GBS="13000"
 CAP_D1_WRITE="100000"
 CAP_D1_READ="5000000"
+CAP_KV_READ="100000"
+CAP_KV_WRITE="1000"
+CAP_KV_DELETE="1000"
+CAP_KV_LIST="1000"
+CAP_AI_NEURONS="10000"
+
+# Worker error warning: at least this many failed requests in a UTC day,
+# and at least this percentage of the day's requests.
+ERROR_ALERT_MIN="50"
+ERROR_ALERT_PERCENT="5"

@@ -1,0 +1,58 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "kvOperationsAdaptiveGroups": [
+            {
+              "sum": {
+                "requests": 300
+              },
+              "dimensions": {
+                "date": "2026-11-11",
+                "actionType": "read"
+              }
+            },
+            {
+              "sum": {
+                "requests": 12
+              },
+              "dimensions": {
+                "date": "2026-11-11",
+                "actionType": "write"
+              }
+            },
+            {
+              "sum": {
+                "requests": 120
+              },
+              "dimensions": {
+                "date": "2026-11-12",
+                "actionType": "read"
+              }
+            },
+            {
+              "sum": {
+                "requests": 4
+              },
+              "dimensions": {
+                "date": "2026-11-12",
+                "actionType": "write"
+              }
+            },
+            {
+              "sum": {
+                "requests": 2
+              },
+              "dimensions": {
+                "date": "2026-11-12",
+                "actionType": "list"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

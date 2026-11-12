@@ -6,7 +6,8 @@
           "workersInvocationsAdaptive": [
             {
               "sum": {
-                "requests": 2345
+                "requests": 2345,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-12T05:00:00Z"
@@ -14,7 +15,8 @@
             },
             {
               "sum": {
-                "requests": 6000
+                "requests": 6000,
+                "errors": 12
               },
               "dimensions": {
                 "datetimeHour": "2026-11-12T13:00:00Z"
@@ -22,7 +24,8 @@
             },
             {
               "sum": {
-                "requests": 4000
+                "requests": 4000,
+                "errors": 0
               },
               "dimensions": {
                 "datetimeHour": "2026-11-12T17:00:00Z"

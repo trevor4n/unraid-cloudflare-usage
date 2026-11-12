@@ -1,0 +1,23 @@
+# Runs both test suites on GitHub's machines: the poller tests (bash, jq) and the
+# tile render tests (PHP, preinstalled on the Ubuntu runner). Nothing to install locally.
+name: tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tool versions
+        run: php --version | head -n 1 && jq --version && bash --version | head -n 1
+      - name: Poller and plugin tests (includes the tile tests when PHP is present)
+        run: ./test/run-tests.sh
+      - name: Tile preview
+        run: ./test/run-tile-test.sh "$RUNNER_TEMP/tile-preview.html"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tile-preview
+          path: ${{ runner.temp }}/tile-preview.html

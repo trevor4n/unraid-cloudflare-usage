@@ -99,7 +99,14 @@ function cfu_body() {
     $out .= "</div>";
   }
   if ($idle) {
-    $names = implode(', ', array_map(fn($m) => $m['label'] ?? $m['id'], $idle));
+    // "KV" when none of its four caps were used; otherwise name each idle one.
+    $kvIdle = count(array_filter($idle, fn($m) => str_starts_with($m['id'] ?? '', 'kv_'))) === 4;
+    $list = $kvIdle ? ['KV'] : [];
+    foreach ($idle as $m) {
+      if ($kvIdle && str_starts_with($m['id'] ?? '', 'kv_')) continue;
+      $list[] = ($m['id'] ?? '') === 'ai' ? 'Workers AI' : ($m['label'] ?? $m['id']);
+    }
+    $names = implode(', ', $list);
     $failing = array_filter($idle, fn($m) => !empty($m['error']));
     $out .= "<div class='cfu-sub'>Also watching, unused this week: ".cfu_h($names)
       .($failing ? " <span class='cfu-warn'>(check failing)</span>" : '')."</div>";

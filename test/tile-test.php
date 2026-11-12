@@ -40,7 +40,7 @@ check('low usage is green', substr_count($html, "class='cfu-metric cfu-green'") 
 check('bar width', str_contains($html, "<span style='width:12.3%'>"));
 check('7 day columns, today last', substr_count($html, "class='cfu-hist-day'") === 7 && str_contains($html, ">Today</span><span class='cfu-hist-label'>"));
 check('70 history cells (10 shown caps x 7 days)', substr_count($html, "class='cfu-col") === 70);
-check('hidden caps listed once', str_contains($html, 'Also watching, unused this week: KV deletes, Workers AI neurons'));
+check('hidden caps listed once', str_contains($html, 'Also watching, unused this week: KV deletes, Workers AI</div>'));
 check('Worker failures shown under the Workers bar', str_contains($html, "<div class='cfu-sub'>12 failed (&lt;1%)</div>"));
 check('token expiry in the footer', str_contains($html, 'API token expires 12 Nov 2027'));
 check('settings cog links to the settings page', str_contains($html, "<a href='/Settings/CloudflareUsage' title='Cloudflare Usage settings'>"));
@@ -71,6 +71,7 @@ $pages['Not set up'] = $html;
 check('tile wraps its own text (no nowrap overflow)', str_contains(file_get_contents(__DIR__.'/../src/tile.css'), '#cfu-body { white-space: normal; }'));
 check('setup hint links to settings', str_contains($html, "<div class='cfu-note cfu-warn'>Not set up:") && str_contains($html, "<a href='/Settings/CloudflareUsage'>Open settings</a>"));
 check('values shown as dashes', substr_count($html, '– / ') === 7);
+check('all of KV idle collapses to one word', str_contains($html, 'Also watching, unused this week: KV, Workers AI</div>'));
 check('no stale warning before the first update', !str_contains($html, "cfu-foot cfu-stale"));
 check('shows when the checker last ran', str_contains($html, 'Not updated yet (checker last ran <span data-cfu-time='));
 

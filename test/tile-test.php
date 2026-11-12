@@ -64,9 +64,11 @@ check('per-metric failure shown', str_contains($html, "<div class='cfu-err'>Last
 echo "tile: not set up\n";
 $html = render('unconfigured');
 $pages['Not set up'] = $html;
+check('tile wraps its own text (no nowrap overflow)', str_contains(file_get_contents(__DIR__.'/../src/tile.css'), '#cfu-body { white-space: normal; }'));
 check('setup hint shown', str_contains($html, "<div class='cfu-note cfu-warn'>Not set up:"));
 check('values shown as dashes', substr_count($html, '– / ') === 7);
-check('stale flag when never updated', str_contains($html, "cfu-foot cfu-stale"));
+check('no stale warning before the first update', !str_contains($html, "cfu-foot cfu-stale"));
+check('shows when the checker last ran', str_contains($html, 'Not updated yet (checker last ran <span data-cfu-time='));
 
 echo "tile: yesterday's cache\n";
 $html = render('old');

@@ -133,9 +133,11 @@ elif [[ ! -r $TOKEN_FILE ]]; then
 else
   TOKEN=$(tr -d '[:space:]' <"$TOKEN_FILE")
   # The token goes inside a quoted curl config line, so allow only token-safe characters.
-  if [[ ! $TOKEN =~ ^[A-Za-z0-9._~+/=-]{20,256}$ ]]; then
+  if [[ -z $TOKEN ]]; then
+    CFG_ERR="The token file $TOKEN_FILE is empty. Save the token again (README step 5)."
+  elif [[ ! $TOKEN =~ ^[A-Za-z0-9._~+/=-]{20,256}$ ]]; then
     TOKEN=""
-    CFG_ERR="The token file $TOKEN_FILE does not hold a valid API token."
+    CFG_ERR="The token file $TOKEN_FILE does not hold a valid API token (wrong length or characters). Save it again (README step 5)."
   fi
 fi
 

@@ -225,7 +225,7 @@ and history stay in `/boot/config/plugins/cloudflare.usage`; delete that folder 
 ## Development
 
 ```bash
-./build.sh               # assemble cloudflare.usage.plg from src/
+./build.sh 2026.11.13    # assemble cloudflare.usage.plg from src/ (add a ###version entry to CHANGES.md first)
 ./test/run-tests.sh      # poller tests against saved sample API responses (bash, jq, python3)
 ./test/run-tile-test.sh  # tile render tests; needs php-cli. Pass a path to also write an HTML preview
 ```

@@ -7,6 +7,10 @@
   --cfu-track: var(--usage-disk-background-color, rgba(128, 128, 128, 0.25));
   --cfu-muted: var(--alt-text-color, #888);
 }
+/* Dashboard cells are nowrap; a long unbroken line here would widen every tile
+   on narrow screens, so this tile wraps its own text. */
+#cfu-body { white-space: normal; }
+#cfu-body .cfu-note, #cfu-body .cfu-err, #cfu-body .cfu-stale-note { overflow-wrap: anywhere; }
 #cfu-body .cfu-metric { margin: 0 0 0.9rem; }
 #cfu-body .cfu-line {
   display: flex;

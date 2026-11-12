@@ -36,7 +36,7 @@
     });
     each(body, '[data-cfu-updated]', function (el) {
       var u = +el.getAttribute('data-cfu-updated');
-      el.classList.toggle('cfu-stale', !u || now - u > STALE_S);
+      el.classList.toggle('cfu-stale', u > 0 && now - u > STALE_S);
     });
   }
 

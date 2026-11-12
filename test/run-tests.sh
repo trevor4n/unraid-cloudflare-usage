@@ -227,6 +227,11 @@ run_at "$T0"
 check "unsafe token rejected before any call" q '.error | contains("does not hold a valid API token")'
 check "no API calls with a bad token" test -z "$(calls)"
 
+new_env empty-token configured
+printf '\n' >"$E/flash/cf-api-token"
+run_at "$T0"
+check "empty token file gets its own message" q '.error | contains("is empty. Save the token again")'
+
 new_env caps configured
 printf 'CAP_WORKERS="50000"\nCAP_D1_READ="oops"\n' >>"$E/flash/cloudflare.usage.cfg"
 run_at "$T0"
@@ -278,7 +283,8 @@ check "fast spike: next check in 5 min (the floor)" q '.interval == 300'
 
 # ---------------------------------------------------------------------------
 echo "plugin file"
-PLG_OUT=$WORK/cloudflare.usage.plg "$ROOT/build.sh" 2026.11.12 >/dev/null
+REL_VERSION=$(sed -n 's/^<!ENTITY version "\(.*\)">$/\1/p' "$ROOT/cloudflare.usage.plg")
+PLG_OUT=$WORK/cloudflare.usage.plg "$ROOT/build.sh" "$REL_VERSION" >/dev/null
 check "cloudflare.usage.plg is well-formed and inlines the sources unchanged" python3 -I - "$ROOT" "$WORK/cloudflare.usage.plg" <<'PY'
 import sys, xml.etree.ElementTree as ET
 root = sys.argv[1]
@@ -303,6 +309,8 @@ assert not plg.findall(".//URL"), "plugin must not download anything"
 PY
 check "release cloudflare.usage.plg is up to date with src/ (rebuild with ./build.sh)" \
   bash -c 'diff <(sed "s/ pluginURL=\"[^\"]*\"//" "$1") "$2"' _ "$ROOT/cloudflare.usage.plg" "$WORK/cloudflare.usage.plg"
+check "tile wraps its own text, so it can't widen the Dashboard" grep -qF '#cfu-body { white-space: normal; }' "$ROOT/src/tile.css"
+check "release notes cover the release version" grep -qx "###$REL_VERSION" "$ROOT/CHANGES.md"
 check "page registers on the Dashboard with Markdown off" bash -c "head -n 3 '$ROOT/src/CloudflareUsageTile.page' | tr '\n' ' ' | grep -qx 'Menu=\"Dashboard:0\" Markdown=\"false\" --- '"
 check "tile has no nested <table>/<tbody> (the Dashboard script would break)" bash -c "test \$(grep -o '<tbody' '$ROOT/src/include/tile.php' | wc -l) = 1 && ! grep -q '<table' '$ROOT/src/include/tile.php'"
 check "cron wakes the poller every 5 minutes in --cron mode" grep -qx '2,7,12,17,22,27,32,37,42,47,52,57 \* \* \* \* /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll --cron >/dev/null 2>&1' "$ROOT/src/cloudflare.usage.cron"

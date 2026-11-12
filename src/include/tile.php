@@ -114,7 +114,9 @@ function cfu_body() {
   // Footer: last update and the next reset, in local time. tile.js keeps
   // the relative parts ("3 min ago", "in 5 h") current between page loads.
   $reset = (int)($d['reset'] ?? 0);
-  $stale = !$updated || $now - $updated > CFU_STALE;
+  // Stale means data that was fresh once and has stopped updating; before the
+  // first update the setup hint or the per-cap errors say what's wrong instead.
+  $stale = $updated && $now - $updated > CFU_STALE;
   $out .= "<div class='cfu-foot".($stale ? ' cfu-stale' : '')."' data-cfu-updated='$updated'>";
   $next = (int)($d['next'] ?? 0);
   if ($updated) {
@@ -124,7 +126,11 @@ function cfu_body() {
       .($next > $now ? ", next check <span data-cfu-time='$next'>".date('H:i', $next)."</span>" : '')
       ."</span>";
   } else {
-    $out .= "<span>Not updated yet</span>";
+    // Show the poller's last run, so it's visible that the schedule is working.
+    $gen = (int)($d['generated'] ?? 0);
+    $out .= "<span>Not updated yet"
+      .($gen ? " (checker last ran <span data-cfu-time='$gen'>".date('H:i', $gen)."</span>)" : '')
+      ."</span>";
   }
   if ($reset) {
     $out .= "<span>Resets <span data-cfu-reset='$reset'>in ".cfu_dur($reset - $now)."</span>"

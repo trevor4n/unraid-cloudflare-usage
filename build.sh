@@ -30,6 +30,10 @@ FILES=(
   "cloudflare.usage.cfg.default|src/cloudflare.usage.cfg.default|0644"
 )
 
+# Release notes go into the plugin unescaped, so keep XML specials out of them.
+if grep -q '[<&]' CHANGES.md; then echo "build: CHANGES.md must not contain < or &" >&2; exit 1; fi
+grep -qx "###$VERSION" CHANGES.md || echo "build: warning: CHANGES.md has no entry for $VERSION" >&2
+
 cdata() { # file -> CDATA block; refuses content that would end it early
   if grep -q ']]>' "$1"; then echo "build: $1 contains ']]>'" >&2; exit 1; fi
   printf '<![CDATA[\n'; cat "$1"; printf ']]>'
@@ -48,8 +52,7 @@ cdata() { # file -> CDATA block; refuses content that would end it early
 <PLUGIN name="&name;" author="&author;" version="&version;" min="7.0.0" icon="cloud"$URL_ATTR>
 
 <CHANGES>
-###$VERSION
-- Dashboard tile for Cloudflare Workers Free plan daily usage (Workers, Durable Objects, D1), with Unraid notifications at 75% and 90% of each cap.
+$(cat CHANGES.md)
 </CHANGES>
 
 <!-- The plugin manager never overwrites an existing file, so clear the old copy first. -->

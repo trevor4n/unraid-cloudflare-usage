@@ -1,0 +1,23 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "durableObjectsPeriodicGroups": [
+            {
+              "sum": {
+                "rowsRead": 900,
+                "rowsWritten": 250,
+                "duration": 12.25
+              },
+              "dimensions": {
+                "date": "2026-11-12"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

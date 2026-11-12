@@ -1,0 +1,415 @@
+#!/bin/bash
+# cloudflare.usage poller.
+#
+# Fetches today's (UTC) Cloudflare Workers Free plan usage from the GraphQL
+# Analytics API, writes the JSON cache the Dashboard tile reads, and raises an
+# Unraid notification at 75% and 90% of each daily cap, once per threshold per
+# UTC day.
+#
+# Cron wakes it every 5 minutes with --cron; it only queries Cloudflare when a
+# check is due. The gap between checks follows the busiest cap: 15 minutes
+# below 75%, 10 minutes from 75%, 5 minutes from 85%. It is shortened further
+# when the current growth rate would reach the next threshold (75%, 90%, the
+# cap) before then, so a fast spike from low usage is still caught early.
+#
+# The API token is read from a file and handed to curl on stdin (curl -K -),
+# so it never appears in the process list, the cache, or the logs.
+#
+#   poll           check now (used at install, and by hand)
+#   poll --cron    check only if due (cron)
+#   poll --check   print what the token can see and today's totals; writes nothing
+
+set -uo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH   # cron's PATH is minimal
+
+PLUGIN=cloudflare.usage
+# The CF_USAGE_* overrides exist for the test suite.
+CFG_DIR=${CF_USAGE_CFG_DIR:-/boot/config/plugins/$PLUGIN}
+STATE_DIR=${CF_USAGE_STATE_DIR:-/var/local/$PLUGIN}
+NOTIFY=${CF_USAGE_NOTIFY:-/usr/local/emhttp/webGui/scripts/notify}
+CURL=${CF_USAGE_CURL:-curl}
+LOGGER=${CF_USAGE_LOGGER:-logger}
+API=${CF_USAGE_API:-https://api.cloudflare.com/client/v4/graphql}
+NOW=${CF_USAGE_NOW:-$(date -u +%s)}
+
+CFG=$CFG_DIR/$PLUGIN.cfg
+CACHE=$STATE_DIR/usage.json            # read by the tile; never contains the token
+HIST_RAM=$STATE_DIR/history.json       # per-day totals, last 7 UTC days
+HIST_FLASH=$CFG_DIR/history.json       # completed days only, survives reboots
+ALERTS=$CFG_DIR/alerts.sent            # "day metric threshold"; written only when an alert fires
+FAIL_SINCE=$STATE_DIR/failing-since    # first run in the current streak where every query failed
+LAST_ERR=$STATE_DIR/last-error         # last error logged, to keep the syslog quiet
+
+FAIL_ALERT_AFTER=3000                  # seconds of total failure before one notification a day
+CRON_SLACK=120                         # a cron wake-up this close to the due time counts as due
+
+CHECK=0 CRON=0
+case ${1:-} in
+  --check) CHECK=1 ;;
+  --cron)  CRON=1 ;;
+esac
+
+log() { "$LOGGER" -t "$PLUGIN" -- "$*" 2>/dev/null || true; }
+
+# Read KEY="value" from the config file without executing it. Tolerates CRLF
+# line endings, in case the file was edited over SMB from Windows.
+cfg() {
+  local v=""
+  [[ -r $CFG ]] && v=$(tr -d '\r' <"$CFG" | sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*\$/\1/p" | tail -n 1)
+  printf '%s' "${v:-$2}"
+}
+
+num_or() { [[ $1 =~ ^[0-9]+$ ]] && (( $1 > 0 )) && printf '%s' "$1" || printf '%s' "$2"; }
+
+commas() { sed ':a;s/\B[0-9]\{3\}\>/,&/;ta' <<<"$1"; }
+
+dur() { # seconds -> "5 h 12 min"
+  local m=$(( ($1 + 59) / 60 ))
+  if (( m >= 60 )); then printf '%d h %d min' $(( m / 60 )) $(( m % 60 )); else printf '%d min' "$m"; fi
+}
+
+# Write stdin to $1 atomically (temp file in the same directory, then rename).
+put() {
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX") || return 1
+  if cat >"$tmp" && mv -f "$tmp" "$1"; then return 0; fi
+  rm -f "$tmp"; return 1
+}
+
+# The web UI reads the cache from here, so the directory stays world-readable.
+mkdir -p -m 755 "$STATE_DIR" || exit 1
+if (( ! CHECK )); then
+  exec 9>"$STATE_DIR/lock"
+  flock -n 9 || exit 0   # previous run still going
+fi
+
+# Cron wake-up: leave quietly unless the last run's schedule says a check is due.
+if (( CRON )); then
+  due=$(jq -r '.next // 0' "$CACHE" 2>/dev/null) || due=0
+  [[ $due =~ ^[0-9]+$ ]] || due=0
+  (( NOW + CRON_SLACK >= due )) || exit 0
+fi
+
+# --- dates (all UTC) --------------------------------------------------------
+TODAY=$(date -u -d "@$NOW" +%F)
+SINCE=$(date -u -d "$TODAY -6 days" +%F)
+NOW_ISO=$(date -u -d "@$NOW" +%FT%TZ)
+RESET=$(date -u -d "$TODAY +1 day" +%s)
+DATES=$(for i in 6 5 4 3 2 1 0; do date -u -d "$TODAY -$i days" +%F; done | jq -Rsc 'split("\n") | map(select(length > 0))')
+
+# --- config -----------------------------------------------------------------
+ACCOUNT_ID=$(cfg ACCOUNT_ID "")
+ACCOUNT_ID=${ACCOUNT_ID,,}
+TOKEN_FILE=$(cfg TOKEN_FILE "$CFG_DIR/cf-api-token")
+CAP_WORKERS=$(num_or "$(cfg CAP_WORKERS 100000)" 100000)
+CAP_DO=$(num_or "$(cfg CAP_DO 100000)" 100000)
+CAP_DO_WRITE=$(num_or "$(cfg CAP_DO_WRITE 100000)" 100000)
+CAP_DO_READ=$(num_or "$(cfg CAP_DO_READ 5000000)" 5000000)
+CAP_DO_GBS=$(num_or "$(cfg CAP_DO_GBS 13000)" 13000)
+CAP_D1_WRITE=$(num_or "$(cfg CAP_D1_WRITE 100000)" 100000)
+CAP_D1_READ=$(num_or "$(cfg CAP_D1_READ 5000000)" 5000000)
+
+# One entry per free-plan daily cap. "src" is the query that reports it.
+# Durable Objects on Workers Free are SQLite-backed, so their storage has its
+# own rows read/written caps (separate from D1's), plus a compute-duration cap.
+DEFS=$(jq -nc --argjson w "$CAP_WORKERS" --argjson o "$CAP_DO" --argjson ow "$CAP_DO_WRITE" --argjson or "$CAP_DO_READ" \
+  --argjson og "$CAP_DO_GBS" --argjson dw "$CAP_D1_WRITE" --argjson dr "$CAP_D1_READ" '[
+  {id: "workers",  src: "workers",  label: "Workers requests",           short: "Workers",   cap: $w},
+  {id: "do",       src: "do",       label: "Durable Objects requests",   short: "DO",        cap: $o},
+  {id: "do_write", src: "do_store", label: "DO storage rows written",    short: "DO writes", cap: $ow},
+  {id: "do_read",  src: "do_store", label: "DO storage rows read",       short: "DO reads",  cap: $or},
+  {id: "do_gbs",   src: "do_store", label: "DO duration (GB-s)",         short: "DO GB-s",   cap: $og},
+  {id: "d1_write", src: "d1",       label: "D1 rows written",            short: "D1 writes", cap: $dw},
+  {id: "d1_read",  src: "d1",       label: "D1 rows read",               short: "D1 reads",  cap: $dr}]')
+SOURCES="workers do do_store d1"
+
+TOKEN=""
+CFG_ERR=""
+if [[ ! $ACCOUNT_ID =~ ^[0-9a-f]{32}$ ]]; then
+  CFG_ERR="Not set up: put your Cloudflare account ID in $CFG (ACCOUNT_ID=\"...\")."
+elif [[ ! -r $TOKEN_FILE ]]; then
+  CFG_ERR="Not set up: save a read-only API token (Account Analytics: Read) to $TOKEN_FILE."
+else
+  TOKEN=$(tr -d '[:space:]' <"$TOKEN_FILE")
+  # The token goes inside a quoted curl config line, so allow only token-safe characters.
+  if [[ ! $TOKEN =~ ^[A-Za-z0-9._~+/=-]{20,256}$ ]]; then
+    TOKEN=""
+    CFG_ERR="The token file $TOKEN_FILE does not hold a valid API token."
+  fi
+fi
+
+# --- GraphQL ----------------------------------------------------------------
+# gql QUERY: sets BODY. Returns 0 on success, 1 on a GraphQL error (HTTP 200),
+# 2 on a transport or HTTP error. On failure ERR holds a one-line message.
+BODY="" ERR=""
+gql() {
+  local payload out code errf=$STATE_DIR/curl.err
+  payload=$(jq -nc --arg q "$1" '{query: $q}')
+  # printf is a bash builtin: the token reaches curl through a pipe, not argv.
+  out=$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
+    "$CURL" -sS -K - --max-time 30 --retry 2 --retry-delay 5 \
+      -H 'Content-Type: application/json' -H 'Accept: application/json' \
+      --data-binary "$payload" -w '\n%{http_code}' "$API" 2>"$errf")
+  code=${out##*$'\n'}
+  BODY=${out%$'\n'*}
+  [[ $code =~ ^[0-9]{3}$ ]] || code=000
+  ERR=""
+  if [[ $code != 200 ]]; then
+    if [[ $code == 000 ]]; then
+      ERR="Could not reach Cloudflare: $(head -n 1 "$errf" 2>/dev/null | cut -c1-200)"
+    else
+      ERR=$(jq -r '(.errors // [])[0].message // empty' <<<"$BODY" 2>/dev/null | head -n 1)
+      ERR="HTTP $code: ${ERR:-$(head -n 1 <<<"$BODY" | cut -c1-200)}"
+    fi
+    ERR=${ERR//"$TOKEN"/[redacted]}
+    return 2
+  fi
+  ERR=$(jq -r '
+    if ((.errors // []) | length) > 0 then (.errors[0].message // "unknown API error")
+    elif ((.data.viewer.accounts // []) | length) == 0 then "Account not found, or the token cannot read its analytics"
+    else empty end' <<<"$BODY" 2>/dev/null) || ERR="Unreadable API response"
+  ERR=${ERR//"$TOKEN"/[redacted]}
+  [[ -z $ERR ]] && return 0
+  ERR=$(head -n 1 <<<"$ERR" | cut -c1-200)
+  return 1
+}
+
+# Queries use literals rather than variables: every value is validated above
+# (hex account ID, dates and times built by date(1)), so nothing is injected.
+q_workers() { # $1 start date
+  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { workersInvocationsAdaptive(limit: 2000, filter: {datetime_geq: "%sT00:00:00Z", datetime_leq: "%s"}) { sum { requests } dimensions { datetimeHour } } } } }' \
+    "$ACCOUNT_ID" "$1" "$NOW_ISO"
+}
+q_do() {
+  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { durableObjectsInvocationsAdaptiveGroups(limit: 100, filter: {date_geq: "%s", date_leq: "%s"}) { sum { requests } dimensions { date } } } } }' \
+    "$ACCOUNT_ID" "$1" "$TODAY"
+}
+q_do_store() {
+  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { durableObjectsPeriodicGroups(limit: 100, filter: {date_geq: "%s", date_leq: "%s"}) { sum { rowsRead rowsWritten duration } dimensions { date } } } } }' \
+    "$ACCOUNT_ID" "$1" "$TODAY"
+}
+q_d1() {
+  printf '{ viewer { accounts(filter: {accountTag: "%s"}) { d1AnalyticsAdaptiveGroups(limit: 100, filter: {date_geq: "%s", date_leq: "%s"}) { sum { rowsRead rowsWritten } dimensions { date } } } } }' \
+    "$ACCOUNT_ID" "$1" "$TODAY"
+}
+
+# Turn a response into {"YYYY-MM-DD": {"metric": n, ...}}, filling every date
+# in the queried range with 0 where Cloudflare returned no rows.
+J_PRELUDE='def days($from): $dates | map(select(. >= $from));
+def fill($from; $keys): . as $m | reduce days($from)[] as $d ($m; .[$d] = ((reduce $keys[] as $k ({}; .[$k] = 0)) + (.[$d] // {})));'
+parse() { # parse SRC FROM
+  local f
+  case $1 in
+    workers) f='.data.viewer.accounts[0].workersInvocationsAdaptive // []
+      | map({d: (.dimensions.datetimeHour // "")[0:10], v: (.sum.requests // 0)}) | map(select(.d != ""))
+      | group_by(.d) | map({key: .[0].d, value: {workers: (map(.v) | add)}}) | from_entries
+      | fill($from; ["workers"])' ;;
+    do) f='.data.viewer.accounts[0].durableObjectsInvocationsAdaptiveGroups // []
+      | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: {do: (map(.sum.requests // 0) | add)}}) | from_entries
+      | fill($from; ["do"])' ;;
+    do_store) f='.data.viewer.accounts[0].durableObjectsPeriodicGroups // []
+      | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: {
+          do_read: (map(.sum.rowsRead // 0) | add), do_write: (map(.sum.rowsWritten // 0) | add),
+          do_gbs: (map(.sum.duration // 0) | add | . * 10 | round / 10)}}) | from_entries
+      | fill($from; ["do_read", "do_write", "do_gbs"])' ;;
+    d1) f='.data.viewer.accounts[0].d1AnalyticsAdaptiveGroups // []
+      | group_by(.dimensions.date) | map({key: .[0].dimensions.date, value: {
+          d1_read: (map(.sum.rowsRead // 0) | add), d1_write: (map(.sum.rowsWritten // 0) | add)}}) | from_entries
+      | fill($from; ["d1_read", "d1_write"])' ;;
+  esac
+  jq -c --argjson dates "$DATES" --arg from "$2" "$J_PRELUDE $f" <<<"$BODY"
+}
+
+# fetch SRC: try the last 7 days; if the plan rejects that range, fall back to
+# today only (the local history file then fills in earlier days).
+# Sets DAYMAP (JSON) on success, SRC_ERR on failure.
+DAYMAP="{}" SRC_ERR=""
+fetch() {
+  local src=$1 from rc
+  DAYMAP="{}" SRC_ERR=""
+  for from in "$SINCE" "$TODAY"; do
+    gql "$(q_"$src" "$from")"; rc=$?
+    if (( rc == 0 )); then
+      DAYMAP=$(parse "$src" "$from") && return 0
+      SRC_ERR="Unexpected response shape"; return 1
+    fi
+    SRC_ERR=$ERR
+    (( rc == 1 )) && [[ $from != "$TODAY" ]] && continue   # GraphQL error: retry with a smaller range
+    return 1
+  done
+  return 1
+}
+
+# --- --check: report and exit -----------------------------------------------
+if (( CHECK )); then
+  [[ -z $CFG_ERR ]] || { echo "$CFG_ERR"; exit 1; }
+  echo "Account $ACCOUNT_ID, token file $TOKEN_FILE (token not shown)"
+  q='{ viewer { accounts(filter: {accountTag: "'$ACCOUNT_ID'"}) { settings {
+      workersInvocationsAdaptive { enabled maxDuration notOlderThan availableFields }
+      durableObjectsInvocationsAdaptiveGroups { enabled maxDuration notOlderThan availableFields }
+      durableObjectsPeriodicGroups { enabled maxDuration notOlderThan availableFields }
+      d1AnalyticsAdaptiveGroups { enabled maxDuration notOlderThan availableFields } } } } }'
+  if gql "$q"; then
+    jq -r '
+      {workersInvocationsAdaptive: ["sum_requests", "dimensions_datetimeHour"],
+       durableObjectsInvocationsAdaptiveGroups: ["sum_requests", "dimensions_date"],
+       durableObjectsPeriodicGroups: ["sum_rowsRead", "sum_rowsWritten", "sum_duration", "dimensions_date"],
+       d1AnalyticsAdaptiveGroups: ["sum_rowsRead", "sum_rowsWritten", "dimensions_date"]} as $need
+      | .data.viewer.accounts[0].settings | to_entries[]
+      | .key as $k | .value as $s
+      | ($need[$k] - ($s.availableFields // [])) as $missing
+      | "\($k): enabled=\($s.enabled), max range \(($s.maxDuration // 0) / 86400 * 10 | floor / 10) days, history \(($s.notOlderThan // 0) / 86400 | floor) days"
+        + (if ($missing | length) > 0 then ", MISSING fields: \($missing | join(" "))" else ", needed fields present" end)' <<<"$BODY"
+  else
+    echo "Settings query failed: $ERR"
+  fi
+  status=0
+  for src in $SOURCES; do
+    if fetch "$src"; then
+      echo "$src: today $(jq -c --arg t "$TODAY" '.[$t] // {}' <<<"$DAYMAP"), days returned: $(jq -r 'keys | length' <<<"$DAYMAP")"
+    else
+      echo "$src: FAILED: $SRC_ERR"; status=1
+    fi
+  done
+  exit $status
+fi
+
+# --- normal run ---------------------------------------------------------------
+HIST=$(cat "$HIST_RAM" 2>/dev/null || cat "$HIST_FLASH" 2>/dev/null || echo '{}')
+jq -e 'type == "object"' <<<"$HIST" >/dev/null 2>&1 || HIST='{}'
+PREV=$(cat "$CACHE" 2>/dev/null || echo '{}')
+jq -e 'type == "object"' <<<"$PREV" >/dev/null 2>&1 || PREV='{}'
+
+ERRS='{}'
+ok_count=0
+if [[ -z $CFG_ERR ]]; then
+  for src in $SOURCES; do
+    if fetch "$src"; then
+      HIST=$(jq -c --argjson m "$DAYMAP" '. * $m' <<<"$HIST")
+      ok_count=$(( ok_count + 1 ))
+    else
+      ERRS=$(jq -c --arg s "$src" --arg e "$SRC_ERR" '.[$s] = $e' <<<"$ERRS")
+    fi
+  done
+fi
+
+# Keep the last 7 UTC days.
+HIST=$(jq -c --arg since "$SINCE" 'with_entries(select(.key >= $since))' <<<"$HIST")
+printf '%s\n' "$HIST" | put "$HIST_RAM"
+
+# Completed days go to the flash drive so history survives a reboot. Write only
+# when a day is added or dropped, or at most every 6 hours, to spare the flash.
+DONE_DAYS=$(jq -c --arg t "$TODAY" 'with_entries(select(.key < $t))' <<<"$HIST")
+OLD_DONE=$(cat "$HIST_FLASH" 2>/dev/null || echo '{}')
+if [[ $DONE_DAYS != "$OLD_DONE" ]]; then
+  if [[ $(jq -c 'keys' <<<"$DONE_DAYS") != "$(jq -c 'keys' <<<"$OLD_DONE" 2>/dev/null)" ]] ||
+     [[ ! -f $HIST_FLASH ]] || (( NOW - $(stat -c %Y "$HIST_FLASH") > 21600 )); then
+    printf '%s\n' "$DONE_DAYS" | put "$HIST_FLASH" || log "could not write $HIST_FLASH"
+  fi
+fi
+
+# The cache also carries the schedule: "next" is when the next --cron run
+# should query Cloudflare (see the header for the rules).
+jq -n --argjson hist "$HIST" --argjson prev "$PREV" --argjson errs "$ERRS" --argjson defs "$DEFS" \
+  --argjson dates "$DATES" --arg today "$TODAY" --argjson now "$NOW" --argjson reset "$RESET" \
+  --arg cfgerr "$CFG_ERR" --arg acct "$ACCOUNT_ID" '
+  def prevm($id): if ($prev.day // "") == $today then (($prev.metrics // []) | map(select(.id == $id)) | .[0] // {}) else {} end;
+  # Base gap from the busiest cap.
+  def tier($pct): if $pct >= 85 then 300 elif $pct >= 75 then 600 else 900 end;
+  # Seconds until metric $m reaches its next threshold at the growth rate seen
+  # since the previous reading today (null if not growing or no usable reading).
+  def eta($m): prevm($m.id) as $p
+    | if $m.value == null or $m.error != "" or ($p.value // null) == null or ($p.fetched // null) == null
+         or $now - $p.fetched < 240 or $m.value <= $p.value then null
+      else (($m.value - $p.value) / ($now - $p.fetched)) as $rate
+        | ([0.75, 0.9, 1] | map(. * $m.cap) | map(select(. > $m.value)) | .[0]) as $t
+        | if $t == null then null else ($t - $m.value) / $rate end
+      end;
+  {
+    schema: 1,
+    generated: $now,
+    day: $today,
+    reset: $reset,
+    account: $acct,
+    error: $cfgerr,
+    metrics: [ $defs[] as $m | {
+      id: $m.id, label: $m.label, short: $m.short, cap: $m.cap,
+      value: ($hist[$today][$m.id] // null),
+      error: (if $cfgerr != "" then "" else ($errs[$m.src] // "") end),
+      fetched: (if $cfgerr == "" and ($errs[$m.src] // "") == "" then $now else (prevm($m.id).fetched // null) end)
+    } ],
+    history: [ $dates[] as $d | {day: $d} + ($hist[$d] // {}) ]
+  }
+  | .interval = (
+      if $cfgerr != "" then 300   # nothing to query; pick up new settings quickly
+      else
+        ([.metrics[] | select(.value != null) | .value * 100 / .cap] | max // 0) as $top
+        | ([.metrics[] | eta(.) | select(. != null)] | min) as $soonest
+        | [tier($top), ($soonest // 900)] | min | [., 300] | max | floor
+      end)
+  | .next = $now + .interval' | put "$CACHE" || { log "could not write $CACHE"; exit 1; }
+chmod 644 "$CACHE" 2>/dev/null
+
+# --- logging: once per change, not every run ------------------------------------
+summary=$CFG_ERR
+[[ -n $summary ]] || summary=$(jq -r 'to_entries | map("\(.key): \(.value)") | join("; ")' <<<"$ERRS")
+if [[ $summary != "$(cat "$LAST_ERR" 2>/dev/null)" ]]; then
+  if [[ -n $summary ]]; then log "$summary"; else log "Cloudflare usage check OK again"; fi
+  printf '%s' "$summary" | put "$LAST_ERR"
+fi
+
+# --- alerts -----------------------------------------------------------------------
+sent_today() { grep -qx "$TODAY $1 $2" "$ALERTS" 2>/dev/null; }
+NEW_SENT=()
+
+notify() { # importance subject description message
+  "$NOTIFY" -e "Cloudflare usage" -s "$2" -d "$3" -m "$4" -i "$1" -l "/Dashboard" >/dev/null 2>&1 ||
+    log "notify failed: $2"
+}
+
+left="$(dur $(( RESET - NOW )))"
+while IFS=$'\t' read -r id label value cap; do
+  [[ -n $id ]] || continue
+  level=0
+  if (( value * 100 >= 90 * cap )); then level=90
+  elif (( value * 100 >= 75 * cap )); then level=75
+  fi
+  (( level )) || continue
+  sent_today "$id" "$level" && continue
+  pct=$(( value * 100 / cap ))
+  case $id in
+    workers) after="Past the cap, Workers on this account return Error 1027 (or skip the Worker if its route fails open) until the reset." ;;
+    do)      after="Past the cap, Durable Object requests fail until the reset." ;;
+    do_write|do_read) after="Past the cap, Durable Object storage operations of that kind fail until the reset." ;;
+    do_gbs)  after="Past the cap, Durable Objects stop running until the reset." ;;
+    *)       after="Past the cap, D1 queries that need more rows fail until the reset." ;;
+  esac
+  imp=warning; (( level == 90 )) && imp=alert
+  notify "$imp" "$label at $pct% of the free daily cap" \
+    "$(commas "$value") of $(commas "$cap") used today (UTC). Resets at 00:00 UTC, in $left." "$after"
+  # One alert per threshold per day; jumping straight past 90% sends only the 90% alert.
+  NEW_SENT+=("$TODAY $id 75")
+  (( level == 90 )) && NEW_SENT+=("$TODAY $id 90")
+done < <(jq -r '.metrics[] | select(.value != null) | [.id, .label, (.value | floor), .cap] | @tsv' "$CACHE")
+
+# Tell the user once a day if every query has been failing for a while, since
+# a broken poller would otherwise mean no alerts at all.
+if [[ -z $CFG_ERR ]] && (( ok_count == 0 )); then
+  [[ -s $FAIL_SINCE ]] || printf '%s' "$NOW" | put "$FAIL_SINCE"
+  since=$(cat "$FAIL_SINCE")
+  if (( NOW - since >= FAIL_ALERT_AFTER )) && ! sent_today poll-failing 1; then
+    notify warning "Cloudflare usage check is failing" \
+      "No usage data since $(date -d "@$since" '+%H:%M'). Cap alerts are paused until it works again." \
+      "$(jq -r 'to_entries | map("\(.key): \(.value)") | join("; ")' <<<"$ERRS")"
+    NEW_SENT+=("$TODAY poll-failing 1")
+  fi
+else
+  rm -f "$FAIL_SINCE"
+fi
+
+if (( ${#NEW_SENT[@]} )); then
+  { grep "^$TODAY " "$ALERTS" 2>/dev/null; printf '%s\n' "${NEW_SENT[@]}"; } | sort -u | put "$ALERTS" ||
+    log "could not write $ALERTS"
+fi
+exit 0

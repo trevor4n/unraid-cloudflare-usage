@@ -1,0 +1,2 @@
+# cloudflare.usage: wake every 5 minutes; the poller queries Cloudflare every 15, 10 or 5 minutes depending on usage
+2,7,12,17,22,27,32,37,42,47,52,57 * * * * /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll --cron >/dev/null 2>&1

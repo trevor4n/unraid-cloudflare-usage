@@ -1,0 +1,42 @@
+#!/bin/bash
+# Stands in for curl in the tests: answers from fixture files instead of the
+# network, and records what it was given so the tests can check the token
+# never reached argv.
+#
+# Fixture lookup: $CF_TEST_FIXTURES/<dataset>-<range>.json, where dataset is
+# workers|do|do_store|d1|settings and range is "week" (query starts at $CF_TEST_SINCE)
+# or "today". A matching .code file sets the HTTP status (default 200); a
+# missing .json simulates a network failure.
+set -u
+config=$(cat)   # poll passes the auth header as a curl config on stdin (-K -)
+printf '%s\n' "$*" >>"$CF_TEST_DIR/curl-argv.log"
+printf '%s\n' "$config" >>"$CF_TEST_DIR/curl-stdin.log"
+
+body=""
+while (( $# )); do
+  if [[ $1 == --data-binary ]]; then body=$2; shift; fi
+  shift
+done
+query=$(jq -r .query <<<"$body")
+case $query in
+  *settings*)                                ds=settings ;;
+  *workersInvocationsAdaptive*)              ds=workers ;;
+  *durableObjectsInvocationsAdaptiveGroups*) ds=do ;;
+  *durableObjectsPeriodicGroups*)            ds=do_store ;;
+  *d1AnalyticsAdaptiveGroups*)               ds=d1 ;;
+  *) echo "fake-curl: unknown query" >&2; printf '\n000'; exit 3 ;;
+esac
+range=today
+[[ $query == *"$CF_TEST_SINCE"* ]] && range=week
+printf '%s-%s\n' "$ds" "$range" >>"$CF_TEST_DIR/curl-calls.log"
+
+file=$CF_TEST_FIXTURES/$ds-$range.json
+if [[ ! -f $file ]]; then
+  echo "curl: (6) Could not resolve host: api.cloudflare.com" >&2
+  printf '\n000'
+  exit 6
+fi
+code=200
+[[ -f ${file%.json}.code ]] && code=$(<"${file%.json}.code")
+cat "$file"
+printf '\n%s' "$code"

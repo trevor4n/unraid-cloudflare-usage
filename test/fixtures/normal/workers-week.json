@@ -1,0 +1,93 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "workersInvocationsAdaptive": [
+            {
+              "sum": {
+                "requests": 3200
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-06T03:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 5000
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-06T15:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 15400
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-07T09:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 20000
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-09T01:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 21000
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-09T22:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 62500
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-10T12:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 23750
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-11T00:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 2345
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-12T05:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 6000
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-12T13:00:00Z"
+              }
+            },
+            {
+              "sum": {
+                "requests": 4000
+              },
+              "dimensions": {
+                "datetimeHour": "2026-11-12T17:00:00Z"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

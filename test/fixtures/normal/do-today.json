@@ -1,0 +1,21 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "durableObjectsInvocationsAdaptiveGroups": [
+            {
+              "sum": {
+                "requests": 300
+              },
+              "dimensions": {
+                "date": "2026-11-12"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

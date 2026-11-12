@@ -1,0 +1,77 @@
+/* cloudflare.usage Dashboard tile. Colours come from the Unraid theme palette, with fallbacks. */
+#cfu-body {
+  --cfu-green: var(--green-500, #17bf0b);
+  --cfu-yellow: var(--yellow-500, #ffd324);
+  --cfu-orange: var(--orange-500, #ff8c2f);
+  --cfu-red: var(--red-700, #de1100);
+  --cfu-track: var(--usage-disk-background-color, rgba(128, 128, 128, 0.25));
+  --cfu-muted: var(--alt-text-color, #888);
+}
+#cfu-body .cfu-metric { margin: 0 0 0.9rem; }
+#cfu-body .cfu-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.3rem;
+}
+#cfu-body .cfu-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+#cfu-body .cfu-num b { display: inline-block; min-width: 3.2em; text-align: right; }
+#cfu-body .cfu-bar {
+  position: relative;
+  height: 0.8rem;
+  border-radius: 0.2rem;
+  overflow: hidden;
+  /* tick marks at the 75% and 90% alert thresholds */
+  background:
+    linear-gradient(to right, transparent calc(75% - 1px), var(--cfu-muted) calc(75% - 1px), var(--cfu-muted) 75%, transparent 75%),
+    linear-gradient(to right, transparent calc(90% - 1px), var(--cfu-muted) calc(90% - 1px), var(--cfu-muted) 90%, transparent 90%),
+    var(--cfu-track);
+}
+#cfu-body .cfu-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--cfu-green);
+}
+#cfu-body .cfu-yellow .cfu-bar > span, #cfu-body i.cfu-yellow { background: var(--cfu-yellow); }
+#cfu-body .cfu-orange .cfu-bar > span, #cfu-body i.cfu-orange { background: var(--cfu-orange); }
+#cfu-body .cfu-red .cfu-bar > span, #cfu-body i.cfu-red { background: var(--cfu-red); }
+#cfu-body i.cfu-green { background: var(--cfu-green); }
+#cfu-body .cfu-red .cfu-num b { color: var(--cfu-red); }
+#cfu-body .cfu-err, #cfu-body .cfu-warn { color: var(--cfu-orange); margin-top: 0.3rem; }
+#cfu-body .cfu-note { margin-bottom: 0.9rem; }
+
+#cfu-body .cfu-hist {
+  display: grid;
+  grid-template-columns: auto repeat(7, minmax(1.4rem, 1fr));
+  align-items: end;
+  gap: 0.25rem 0.4rem;
+  margin: 1.2rem 0 0.9rem;
+  font-size: 0.9em;
+}
+#cfu-body .cfu-hist-title, #cfu-body .cfu-hist-day { color: var(--cfu-muted); }
+#cfu-body .cfu-hist-day { text-align: center; }
+#cfu-body .cfu-hist-label { white-space: nowrap; padding-right: 0.4rem; }
+#cfu-body .cfu-col {
+  position: relative;
+  height: 1.6rem;
+  border-bottom: 1px solid var(--cfu-muted);
+}
+#cfu-body .cfu-col > i {
+  position: absolute;
+  left: 15%;
+  right: 15%;
+  bottom: 0;
+  border-radius: 0.15rem 0.15rem 0 0;
+}
+#cfu-body .cfu-col-none { border-bottom-style: dotted; opacity: 0.5; }
+
+#cfu-body .cfu-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.3rem 1rem;
+  color: var(--cfu-muted);
+}
+#cfu-body .cfu-stale-note { display: none; flex-basis: 100%; color: var(--cfu-orange); }
+#cfu-body .cfu-stale .cfu-stale-note { display: block; }

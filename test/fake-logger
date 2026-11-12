@@ -1,0 +1,5 @@
+#!/bin/bash
+# Stands in for logger(1): appends the message to the test's syslog file.
+shift 2   # -t tag
+[[ ${1:-} == -- ]] && shift
+printf '%s\n' "$*" >>"$CF_TEST_DIR/syslog.log"

@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stands in for Unraid's notify script: one line per call, "importance | subject | description".
+imp="" subj="" desc=""
+while getopts "e:s:d:i:m:l:" o; do
+  case $o in i) imp=$OPTARG ;; s) subj=$OPTARG ;; d) desc=$OPTARG ;; *) ;; esac
+done
+printf '%s | %s | %s\n' "$imp" "$subj" "$desc" >>"$CF_TEST_DIR/notify.log"

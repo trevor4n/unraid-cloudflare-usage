@@ -1,0 +1,15 @@
+Menu="Dashboard:0"
+Markdown="false"
+---
+<?PHP
+/* cloudflare.usage: adds the Cloudflare free-plan usage tile to the Dashboard.
+ *
+ * Follows DashboardCustomTileExample.page in unraid/webgui: "Dashboard:0" sorts
+ * this page ahead of DashStats.page, which prints $mytiles into its columns.
+ * The tile reads only the local cache written by scripts/poll.
+ */
+require_once "$docroot/plugins/cloudflare.usage/include/tile.php";
+$mytiles['cloudflare.usage']['column2'] = cfu_tile();
+?>
+<link type="text/css" rel="stylesheet" href="<?autov('/plugins/cloudflare.usage/tile.css')?>">
+<script src="<?autov('/plugins/cloudflare.usage/tile.js')?>"></script>

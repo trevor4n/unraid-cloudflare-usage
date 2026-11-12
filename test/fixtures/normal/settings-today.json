@@ -1,0 +1,55 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "settings": {
+            "workersInvocationsAdaptive": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_requests",
+                "sum_errors",
+                "dimensions_datetimeHour",
+                "dimensions_scriptName"
+              ]
+            },
+            "durableObjectsInvocationsAdaptiveGroups": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_requests",
+                "dimensions_date"
+              ]
+            },
+            "d1AnalyticsAdaptiveGroups": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_rowsRead",
+                "sum_rowsWritten",
+                "dimensions_date"
+              ]
+            },
+            "durableObjectsPeriodicGroups": {
+              "enabled": true,
+              "maxDuration": 2678400,
+              "notOlderThan": 7948800,
+              "availableFields": [
+                "sum_rowsRead",
+                "sum_rowsWritten",
+                "sum_duration",
+                "sum_activeTime",
+                "dimensions_date"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "errors": null
+}

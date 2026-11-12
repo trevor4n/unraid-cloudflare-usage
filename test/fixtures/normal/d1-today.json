@@ -1,0 +1,22 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "d1AnalyticsAdaptiveGroups": [
+            {
+              "sum": {
+                "rowsRead": 1234567,
+                "rowsWritten": 2500
+              },
+              "dimensions": {
+                "date": "2026-11-12"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}

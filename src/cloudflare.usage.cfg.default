@@ -1,0 +1,19 @@
+# cloudflare.usage settings. Read by /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll.
+# Changes apply within 15 minutes (5 while not set up); no restart needed. To apply now:
+#   /usr/local/emhttp/plugins/cloudflare.usage/scripts/poll
+
+# Cloudflare account ID: 32 hex characters, shown in the dashboard URL
+# (dash.cloudflare.com/<account-id>/...) and on the Workers & Pages overview.
+ACCOUNT_ID=""
+
+# File holding the read-only API token (Account Analytics: Read, this account only).
+TOKEN_FILE="/boot/config/plugins/cloudflare.usage/cf-api-token"
+
+# Daily caps on the Workers Free plan. Change only if Cloudflare changes them.
+CAP_WORKERS="100000"
+CAP_DO="100000"
+CAP_DO_WRITE="100000"
+CAP_DO_READ="5000000"
+CAP_DO_GBS="13000"
+CAP_D1_WRITE="100000"
+CAP_D1_READ="5000000"

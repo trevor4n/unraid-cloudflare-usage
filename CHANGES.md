@@ -1,3 +1,6 @@
+###2026.11.12c
+- The install and update output is just the version line, plus a pointer to the settings page while the plugin isn't set up. It no longer prints the account ID.
+
 ###2026.11.12b
 - Settings page (Settings, User Utilities, Cloudflare Usage; or click the plugin icon): enter the account ID and API token, test the connection, see status and token expiry. The token is write-only.
 - Warns 30 days before the API token expires, then alerts at 7 days and 1 day.

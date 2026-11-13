@@ -29,10 +29,8 @@ setsid bash -c '
 # What the install dialog shows (live on Unraid 7.4+). @VERSION@ is filled in by build.sh.
 echo ""
 echo "Cloudflare Usage @VERSION@"
-acct=$(sed -n 's/^ACCOUNT_ID="\([0-9a-f]\{32\}\)".*/\1/p' "$CFG/cloudflare.usage.cfg" 2>/dev/null)
-if [[ -n $acct && -s $CFG/cf-api-token ]]; then
-  echo "Set up for account $acct. Checks run every 5 to 15 minutes; the tile is on the Dashboard."
-else
+# Only say more when there is something to do: a fresh install with no settings yet.
+if ! grep -qE '^ACCOUNT_ID="[0-9a-f]{32}"' "$CFG/cloudflare.usage.cfg" 2>/dev/null || [[ ! -s $CFG/cf-api-token ]]; then
   echo "Next: open Settings > Cloudflare Usage (or click this plugin's icon) to add your account ID and API token."
 fi
 echo ""

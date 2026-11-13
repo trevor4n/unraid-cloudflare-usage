@@ -10,14 +10,14 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Tool versions
         run: php --version | head -n 1 && jq --version && bash --version | head -n 1
       - name: Poller and plugin tests (includes the tile tests when PHP is present)
         run: ./test/run-tests.sh
       - name: Tile preview
         run: ./test/run-tile-test.sh "$RUNNER_TEMP/tile-preview.html"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tile-preview
           path: ${{ runner.temp }}/tile-preview.html
